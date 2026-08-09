@@ -29,6 +29,15 @@ impl App {
         Self { rows, scroll: 0, gutter_w: digits + 1 }
     }
 
+    pub fn max_scroll(&self, viewport_h: usize) -> usize {
+        self.rows.len().saturating_sub(viewport_h.saturating_sub(1))
+    }
+
+    /// file jumps and shrinking resizes can leave `scroll` past the bound
+    pub fn clamp_scroll(&mut self, viewport_h: usize) {
+        self.scroll = self.scroll.min(self.max_scroll(viewport_h));
+    }
+
     /// index of the next/prev `Row::File` relative to current scroll
     pub fn file_jump(&self, forward: bool) -> Option<usize> {
         let is_file = |i: &usize| matches!(self.rows[*i], Row::File(_));
@@ -113,6 +122,8 @@ fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'s
     let budget = width - gutter_w;
 
     // does the expanded text fit? (tab = 4 cols)
+    // ponytail: per-char widths; ZWJ emoji clusters (👩‍💻) over-count and shift the
+    // divider on that row only — switch to grapheme segmentation if it ever matters
     let col = |ch: char| if ch == '\t' { 4 } else { ch.width().unwrap_or(0) };
     let full: usize = c.text.chars().map(col).sum();
     let fits = full <= budget;
@@ -226,6 +237,15 @@ diff --git a/f.rs b/f.rs
                 " j/k · ctrl-d/u · n/p · g/G · q".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn clamp_scroll_respects_viewport() {
+        let rows: Vec<Row> = (0..10).map(|i| Row::Raw(format!("r{i}"))).collect();
+        let mut app = App::new(rows);
+        app.scroll = 9; // e.g. `n` jumped to a header near the end
+        app.clamp_scroll(5); // 5-row terminal: 4 body rows -> max scroll 6
+        assert_eq!(app.scroll, 6);
     }
 
     #[test]

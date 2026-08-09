@@ -43,15 +43,15 @@ fn main() -> Result<()> {
 
 fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
     loop {
+        let h = term.size()?.height as usize;
+        let half = h / 2;
+        let max = app.max_scroll(h);
+        app.clamp_scroll(h);
         term.draw(|f| ui::draw(f, app))?;
         if let Event::Key(k) = event::read()? {
             if k.kind != KeyEventKind::Press {
                 continue;
             }
-            let h = term.size()?.height as usize;
-            let half = h / 2;
-            // stop scrolling once the last row reaches the bottom, not the top
-            let max = app.rows.len().saturating_sub(h.saturating_sub(1));
             let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
             match k.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),

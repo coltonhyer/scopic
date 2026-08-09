@@ -37,6 +37,7 @@ pub fn parse(input: &[u8]) -> Vec<Row> {
         p.line(line);
     }
     p.flush_pairs();
+    p.flush_status();
     p.rows
 }
 
@@ -74,15 +75,19 @@ struct Parser {
     file_row: Option<usize>,
     title_fixed: bool, // rename title set; don't let +++ override
     minus_path: Option<String>,
+    pending_status: Vec<String>,
+    section_start: usize,
 }
 
 impl Parser {
     fn line(&mut self, line: &str) {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             self.flush_pairs();
+            self.flush_status();
             let name = rest.rfind(" b/").map(|p| &rest[p + 3..]).unwrap_or(rest);
             self.file_row = Some(self.rows.len());
             self.rows.push(Row::File(name.to_string()));
+            self.section_start = self.rows.len();
             self.in_header = true;
             self.in_hunk = false;
             self.title_fixed = false;
@@ -164,8 +169,22 @@ impl Parser {
             self.title_fixed = true;
         } else if line.starts_with("Binary files ") {
             self.rows.push(Row::Raw(line.to_string()));
+        } else if ["new file mode", "deleted file mode", "old mode", "new mode"]
+            .iter()
+            .any(|p| line.starts_with(p))
+        {
+            // shown only if the section ends up hunk-less — then they're the whole story
+            self.pending_status.push(line.to_string());
         }
-        // everything else (index, modes, similarity, GIT binary patch…) is swallowed
+        // everything else (index, similarity, GIT binary patch…) is swallowed
+    }
+
+    /// at section end: if nothing followed the File row, the mode headers are the content
+    fn flush_status(&mut self) {
+        let pending = std::mem::take(&mut self.pending_status);
+        if self.rows.len() == self.section_start {
+            self.rows.extend(pending.into_iter().map(Row::Raw));
+        }
     }
 
     fn title(&self) -> String {
@@ -414,6 +433,42 @@ diff --git a/g b/g
                 assert!(hi <= s.len() && s.is_char_boundary(lo) && s.is_char_boundary(hi));
             }
         }
+    }
+
+    #[test]
+    fn statusonly_sections_keep_mode_headers() {
+        let input = "\
+diff --git a/e b/e
+new file mode 100644
+index 0000000..e69de29
+diff --git a/x b/x
+old mode 100644
+new mode 100755
+";
+        assert_eq!(
+            parse(input.as_bytes()),
+            vec![
+                Row::File("e".into()),
+                Row::Raw("new file mode 100644".into()),
+                Row::File("x".into()),
+                Row::Raw("old mode 100644".into()),
+                Row::Raw("new mode 100755".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn sections_with_hunks_suppress_mode_headers() {
+        let input = "\
+diff --git a/n.txt b/n.txt
+new file mode 100644
+--- /dev/null
++++ b/n.txt
+@@ -0,0 +1 @@
++hi
+";
+        let rows = parse(input.as_bytes());
+        assert!(!rows.iter().any(|r| matches!(r, Row::Raw(t) if t.contains("new file mode"))));
     }
 
     #[test]

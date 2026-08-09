@@ -1,0 +1,10 @@
+[package]
+name = "scopic"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+ratatui = "0.30.2"
+similar = { version = "3.1.2", features = ["unicode"] }
+unicode-width = "0.2.2"

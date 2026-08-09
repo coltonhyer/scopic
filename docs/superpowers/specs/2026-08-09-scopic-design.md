@@ -86,8 +86,10 @@ Input: patch bytes. Output: `Vec<FileDiff>`; each `FileDiff` = header info + `Ve
   produces emphasis ranges for both cells. Skipped for lines over 1 KB.
   <!-- ponytail: size skip instead of a diff deadline; revisit if pathological lines show up -->
 - Cell text is stored raw. Tab expansion (4 columns) and CRLF display-stripping
-  happen at render prep only — never before anything is compared, because scopic
-  compares nothing.
+  happen at render prep only. Line-level comparison already happened in the VCS;
+  the intraline comparison runs on raw text, and its emphasis ranges are byte
+  ranges into that raw text which the renderer maps through tab expansion when
+  drawing.
 
 ## TUI (src/ui.rs)
 
@@ -106,7 +108,7 @@ Input: patch bytes. Output: `Vec<FileDiff>`; each `FileDiff` = header info + `Ve
   view; footer shows key hints.
 - Keys: `j/k`/arrows scroll · `ctrl-d/u` half-page · `n/p` jump between file
   headers · `f` overlay file picker (status + counts, enter jumps, esc closes) ·
-  `h/l` horizontal pan · `g/G` top/bottom · `q`/esc quit · ctrl-c always quits
+  `h/l` horizontal pan (one shared offset for both panes) · `g/G` top/bottom · `q`/esc quit · ctrl-c always quits
   cleanly.
 - Long lines truncate with `…`; panning is char-safe (never slices UTF-8 mid-char);
   all widths are computed in display columns via ratatui spans (unicode-width).

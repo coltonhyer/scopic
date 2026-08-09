@@ -47,5 +47,6 @@ Then `jj diff`, `jj show`, and `git diff` open scopic automatically.
 
 ## Notes
 
-~500 lines, three source files, four dependencies. The heavier reviewed
-design this was descoped from lives in `docs/superpowers/specs/`.
+~500 lines, three source files, three dependencies. The heavier reviewed
+design this was descoped from is archived in the superstore ledger
+(`.agents/ledger.db`).

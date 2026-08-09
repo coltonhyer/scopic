@@ -1,1 +1,4 @@
 /target
+.agents/ledger.db-journal
+.agents/ledger.db-wal
+.agents/ledger.db-shm

@@ -3,8 +3,9 @@ mod ui;
 
 use std::io::Read;
 
-use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const HELP: &str = "scopic — side-by-side diff viewer
 
@@ -18,10 +19,6 @@ fn main() -> Result<()> {
     let input = match std::env::args().nth(1).as_deref() {
         Some("--help" | "-h") => {
             print!("{HELP}");
-            return Ok(());
-        }
-        Some("--version" | "-V") => {
-            println!("scopic {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         Some(path) => std::fs::read(path)?,

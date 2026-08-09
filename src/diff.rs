@@ -158,15 +158,14 @@ impl Parser {
             }
         } else if let Some(from) = line.strip_prefix("rename from ") {
             self.set_title(from.to_string());
+        } else if let Some(to) = line.strip_prefix("rename to ") {
+            let current = self.title();
+            self.set_title(format!("{current} → {to}"));
+            self.title_fixed = true;
         } else if line.starts_with("Binary files ") {
             self.rows.push(Row::Raw(line.to_string()));
         }
         // everything else (index, modes, similarity, GIT binary patch…) is swallowed
-        if let Some(to) = line.strip_prefix("rename to ") {
-            let current = self.title();
-            self.set_title(format!("{current} → {to}"));
-            self.title_fixed = true;
-        }
     }
 
     fn title(&self) -> String {

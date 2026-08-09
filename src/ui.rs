@@ -25,13 +25,8 @@ impl App {
             })
             .max()
             .unwrap_or(0);
-        let mut digits = 1;
-        let mut n = max_no;
-        while n >= 10 {
-            n /= 10;
-            digits += 1;
-        }
-        Self { rows, scroll: 0, gutter_w: digits.max(4) + 1 }
+        let digits = (max_no.max(1).ilog10() as usize + 1).max(4);
+        Self { rows, scroll: 0, gutter_w: digits + 1 }
     }
 
     /// index of the next/prev `Row::File` relative to current scroll

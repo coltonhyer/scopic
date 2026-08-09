@@ -1,9 +1,14 @@
 # scopic — design spec (v1)
 
 Date: 2026-08-09
-Status: design approved; pre-implementation. Reviewed twice by GPT-5.6-sol via Codex
-(both rounds: approve-with-changes; all accepted changes are folded in below, skipped
-ones are logged at the bottom).
+Status: **SUPERSEDED.** v1 was descoped to a pure diff *renderer*: scopic reads an
+already-produced git-format diff from stdin or a file (`jj diff --git | scopic`) and
+is installed as the VCS's diff pager — it does not spawn git/jj itself and has no
+VCS awareness. Codex (GPT-5.6-sol) reviewed and endorsed that direction on
+2026-08-09. This document remains as the reference for the heavier spawn-mode
+design and its review-hardened details, should the tool ever grow into them.
+Originally: reviewed twice by GPT-5.6-sol via Codex (both rounds:
+approve-with-changes; accepted changes folded in below).
 
 ## Purpose
 

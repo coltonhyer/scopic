@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::Paragraph,
-    Frame,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -26,7 +26,11 @@ impl App {
             .max()
             .unwrap_or(0);
         let digits = (max_no.max(1).ilog10() as usize + 1).max(4);
-        Self { rows, scroll: 0, gutter_w: digits + 1 }
+        Self {
+            rows,
+            scroll: 0,
+            gutter_w: digits + 1,
+        }
     }
 
     pub fn max_scroll(&self, viewport_h: usize) -> usize {
@@ -66,8 +70,12 @@ fn base_style(kind: Kind) -> Style {
 fn emph_style(kind: Kind) -> Style {
     match kind {
         Kind::Ctx => Style::default(),
-        Kind::Del => Style::default().bg(Color::Indexed(88)).add_modifier(Modifier::BOLD),
-        Kind::Add => Style::default().bg(Color::Indexed(28)).add_modifier(Modifier::BOLD),
+        Kind::Del => Style::default()
+            .bg(Color::Indexed(88))
+            .add_modifier(Modifier::BOLD),
+        Kind::Add => Style::default()
+            .bg(Color::Indexed(28))
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -89,10 +97,20 @@ pub fn draw(f: &mut Frame, app: &App) {
         .map(|row| render_row(row, left_w, right_w, app.gutter_w))
         .collect();
 
-    let body = Rect { x: area.x, y: area.y, width: area.width, height: body_h };
+    let body = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: body_h,
+    };
     f.render_widget(Paragraph::new(Text::from(lines)), body);
 
-    let footer = Rect { x: area.x, y: area.y + body_h, width: area.width, height: 1 };
+    let footer = Rect {
+        x: area.x,
+        y: area.y + body_h,
+        width: area.width,
+        height: 1,
+    };
     f.render_widget(Paragraph::new(Line::styled(FOOTER, dim())), footer);
 }
 
@@ -118,16 +136,29 @@ fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'s
     let emph = emph_style(c.kind);
     let gutter_w = gutter_w.min(width);
     let g = format!("{:>w$} ", c.no, w = gutter_w.saturating_sub(1));
-    let mut spans = vec![Span::styled(g.chars().take(gutter_w).collect::<String>(), dim())];
+    let mut spans = vec![Span::styled(
+        g.chars().take(gutter_w).collect::<String>(),
+        dim(),
+    )];
     let budget = width - gutter_w;
 
     // does the expanded text fit? (tab = 4 cols)
     // ponytail: per-char widths; ZWJ emoji clusters (👩‍💻) over-count and shift the
     // divider on that row only — switch to grapheme segmentation if it ever matters
-    let col = |ch: char| if ch == '\t' { 4 } else { ch.width().unwrap_or(0) };
+    let col = |ch: char| {
+        if ch == '\t' {
+            4
+        } else {
+            ch.width().unwrap_or(0)
+        }
+    };
     let full: usize = c.text.chars().map(col).sum();
     let fits = full <= budget;
-    let budget_eff = if fits { budget } else { budget.saturating_sub(1) };
+    let budget_eff = if fits {
+        budget
+    } else {
+        budget.saturating_sub(1)
+    };
 
     let mut used = 0usize;
     let mut cur = String::new();
@@ -143,7 +174,10 @@ fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'s
             .take_while(|&&(s, _)| s <= bidx)
             .any(|&(s, e)| bidx >= s && bidx < e);
         if in_emph != cur_emph && !cur.is_empty() {
-            spans.push(Span::styled(std::mem::take(&mut cur), if cur_emph { emph } else { base }));
+            spans.push(Span::styled(
+                std::mem::take(&mut cur),
+                if cur_emph { emph } else { base },
+            ));
         }
         cur_emph = in_emph;
         if ch == '\t' {
@@ -169,7 +203,7 @@ fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     const SMALL: &str = "\
 diff --git a/f.rs b/f.rs
@@ -251,11 +285,20 @@ diff --git a/f.rs b/f.rs
     #[test]
     fn six_digit_line_numbers_render_in_full() {
         let app = App::new(vec![Row::Line {
-            left: Some(crate::diff::Cell { no: 100000, text: "hello".into(), kind: crate::diff::Kind::Del, emph: vec![] }),
+            left: Some(crate::diff::Cell {
+                no: 100000,
+                text: "hello".into(),
+                kind: crate::diff::Kind::Del,
+                emph: vec![],
+            }),
             right: None,
         }]);
         let lines = render(40, 2, &app);
-        assert!(lines[0].starts_with("100000 hello"), "gutter truncated the line number: {:?}", lines[0]);
+        assert!(
+            lines[0].starts_with("100000 hello"),
+            "gutter truncated the line number: {:?}",
+            lines[0]
+        );
     }
 
     #[test]

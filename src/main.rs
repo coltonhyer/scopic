@@ -3,7 +3,13 @@ mod ui;
 
 use std::io::Read;
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::{
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseEventKind,
+    },
+    execute,
+};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -36,7 +42,15 @@ fn main() -> Result<()> {
 
     let mut app = ui::App::new(rows);
     let mut term = ratatui::init(); // installs a terminal-restoring panic hook
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    // ratatui's panic hook doesn't know about mouse capture; release it first
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        prev(info);
+    }));
     let res = run(&mut term, &mut app);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     res
 }
@@ -48,34 +62,42 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
         let max = app.max_scroll(h);
         app.clamp_scroll(h);
         term.draw(|f| ui::draw(f, app))?;
-        if let Event::Key(k) = event::read()? {
-            if k.kind != KeyEventKind::Press {
-                continue;
-            }
-            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-            match k.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Char('c') if ctrl => return Ok(()),
-                KeyCode::Char('j') | KeyCode::Down => app.scroll = (app.scroll + 1).min(max),
-                KeyCode::Char('k') | KeyCode::Up => app.scroll = app.scroll.saturating_sub(1),
-                KeyCode::Char('d') if ctrl => app.scroll = (app.scroll + half).min(max),
-                KeyCode::Char('u') if ctrl => app.scroll = app.scroll.saturating_sub(half),
-                KeyCode::PageDown => app.scroll = (app.scroll + half).min(max),
-                KeyCode::PageUp => app.scroll = app.scroll.saturating_sub(half),
-                KeyCode::Char('g') => app.scroll = 0,
-                KeyCode::Char('G') => app.scroll = max,
-                KeyCode::Char('n') => {
-                    if let Some(i) = app.file_jump(true) {
-                        app.scroll = i;
-                    }
-                }
-                KeyCode::Char('p') => {
-                    if let Some(i) = app.file_jump(false) {
-                        app.scroll = i;
-                    }
-                }
+        match event::read()? {
+            Event::Mouse(m) => match m.kind {
+                MouseEventKind::ScrollDown => app.scroll = app.scroll.saturating_add(3),
+                MouseEventKind::ScrollUp => app.scroll = app.scroll.saturating_sub(3),
                 _ => {}
+            },
+            Event::Key(k) => {
+                if k.kind != KeyEventKind::Press {
+                    continue;
+                }
+                let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                match k.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('c') if ctrl => return Ok(()),
+                    KeyCode::Char('j') | KeyCode::Down => app.scroll = (app.scroll + 1).min(max),
+                    KeyCode::Char('k') | KeyCode::Up => app.scroll = app.scroll.saturating_sub(1),
+                    KeyCode::Char('d') if ctrl => app.scroll = (app.scroll + half).min(max),
+                    KeyCode::Char('u') if ctrl => app.scroll = app.scroll.saturating_sub(half),
+                    KeyCode::PageDown => app.scroll = (app.scroll + half).min(max),
+                    KeyCode::PageUp => app.scroll = app.scroll.saturating_sub(half),
+                    KeyCode::Char('g') => app.scroll = 0,
+                    KeyCode::Char('G') => app.scroll = max,
+                    KeyCode::Char('n') => {
+                        if let Some(i) = app.file_jump(true) {
+                            app.scroll = i;
+                        }
+                    }
+                    KeyCode::Char('p') => {
+                        if let Some(i) = app.file_jump(false) {
+                            app.scroll = i;
+                        }
+                    }
+                    _ => {}
+                }
             }
+            _ => {}
         }
     }
 }

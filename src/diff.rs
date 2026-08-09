@@ -123,18 +123,38 @@ impl Parser {
                     self.flush_pairs();
                     let text: String = chars.collect();
                     self.rows.push(Row::Line {
-                        left: Some(Cell { no: self.old_no, text: text.clone(), kind: Kind::Ctx, emph: vec![] }),
-                        right: Some(Cell { no: self.new_no, text, kind: Kind::Ctx, emph: vec![] }),
+                        left: Some(Cell {
+                            no: self.old_no,
+                            text: text.clone(),
+                            kind: Kind::Ctx,
+                            emph: vec![],
+                        }),
+                        right: Some(Cell {
+                            no: self.new_no,
+                            text,
+                            kind: Kind::Ctx,
+                            emph: vec![],
+                        }),
                     });
                     self.old_no += 1;
                     self.new_no += 1;
                 }
                 Some('-') => {
-                    self.dels.push(Cell { no: self.old_no, text: chars.collect(), kind: Kind::Del, emph: vec![] });
+                    self.dels.push(Cell {
+                        no: self.old_no,
+                        text: chars.collect(),
+                        kind: Kind::Del,
+                        emph: vec![],
+                    });
                     self.old_no += 1;
                 }
                 Some('+') => {
-                    self.adds.push(Cell { no: self.new_no, text: chars.collect(), kind: Kind::Add, emph: vec![] });
+                    self.adds.push(Cell {
+                        no: self.new_no,
+                        text: chars.collect(),
+                        kind: Kind::Add,
+                        emph: vec![],
+                    });
                     self.new_no += 1;
                 }
                 Some('\\') => {} // "\ No newline at end of file"
@@ -220,15 +240,29 @@ impl Parser {
 }
 
 fn strip_prefix_ab(p: &str) -> &str {
-    p.strip_prefix("a/").or_else(|| p.strip_prefix("b/")).unwrap_or(p)
+    p.strip_prefix("a/")
+        .or_else(|| p.strip_prefix("b/"))
+        .unwrap_or(p)
 }
 
 /// "@@ -a[,b] +c[,d] @@ …" → (a, c)
 fn hunk_starts(line: &str) -> Option<(u32, u32)> {
     let mut it = line.split_whitespace();
     it.next()?; // @@
-    let old = it.next()?.strip_prefix('-')?.split(',').next()?.parse().ok()?;
-    let new = it.next()?.strip_prefix('+')?.split(',').next()?.parse().ok()?;
+    let old = it
+        .next()?
+        .strip_prefix('-')?
+        .split(',')
+        .next()?
+        .parse()
+        .ok()?;
+    let new = it
+        .next()?
+        .strip_prefix('+')?
+        .split(',')
+        .next()?
+        .parse()
+        .ok()?;
     Some((old, new))
 }
 
@@ -280,7 +314,12 @@ index 1111111..2222222 100644
 ";
 
     fn cell(no: u32, text: &str, kind: Kind) -> Option<Cell> {
-        Some(Cell { no, text: text.into(), kind, emph: vec![] })
+        Some(Cell {
+            no,
+            text: text.into(),
+            kind,
+            emph: vec![],
+        })
     }
 
     // like `cell` but ignores emph when comparing; tests that don't care about
@@ -289,8 +328,14 @@ index 1111111..2222222 100644
         rows.into_iter()
             .map(|r| match r {
                 Row::Line { left, right } => Row::Line {
-                    left: left.map(|mut c| { c.emph.clear(); c }),
-                    right: right.map(|mut c| { c.emph.clear(); c }),
+                    left: left.map(|mut c| {
+                        c.emph.clear();
+                        c
+                    }),
+                    right: right.map(|mut c| {
+                        c.emph.clear();
+                        c
+                    }),
                 },
                 other => other,
             })
@@ -311,10 +356,22 @@ index 1111111..2222222 100644
             vec![
                 Row::File("src/main.rs".into()),
                 Row::Hunk("@@ -10,3 +10,4 @@ fn main() {".into()),
-                Row::Line { left: cell(10, "fn main() {", Kind::Ctx), right: cell(10, "fn main() {", Kind::Ctx) },
-                Row::Line { left: cell(11, "    let x = 1;", Kind::Del), right: cell(11, "    let x = 2;", Kind::Add) },
-                Row::Line { left: None, right: cell(12, "    let y = 3;", Kind::Add) },
-                Row::Line { left: cell(12, "}", Kind::Ctx), right: cell(13, "}", Kind::Ctx) },
+                Row::Line {
+                    left: cell(10, "fn main() {", Kind::Ctx),
+                    right: cell(10, "fn main() {", Kind::Ctx)
+                },
+                Row::Line {
+                    left: cell(11, "    let x = 1;", Kind::Del),
+                    right: cell(11, "    let x = 2;", Kind::Add)
+                },
+                Row::Line {
+                    left: None,
+                    right: cell(12, "    let y = 3;", Kind::Add)
+                },
+                Row::Line {
+                    left: cell(12, "}", Kind::Ctx),
+                    right: cell(13, "}", Kind::Ctx)
+                },
             ]
         );
     }
@@ -322,7 +379,11 @@ index 1111111..2222222 100644
     #[test]
     fn intraline_marks_changed_word() {
         let rows = parse(BASIC.as_bytes());
-        let Row::Line { left: Some(l), right: Some(r) } = &rows[3] else {
+        let Row::Line {
+            left: Some(l),
+            right: Some(r),
+        } = &rows[3]
+        else {
             panic!("expected paired line, got {:?}", rows[3]);
         };
         assert_eq!(l.emph, vec![(12, 13)]); // the "1"
@@ -344,8 +405,14 @@ diff --git a/f b/f
         assert_eq!(
             rows[2..],
             vec![
-                Row::Line { left: cell(1, "one", Kind::Del), right: cell(1, "uno", Kind::Add) },
-                Row::Line { left: cell(2, "two", Kind::Del), right: None },
+                Row::Line {
+                    left: cell(1, "one", Kind::Del),
+                    right: cell(1, "uno", Kind::Add)
+                },
+                Row::Line {
+                    left: cell(2, "two", Kind::Del),
+                    right: None
+                },
             ]
         );
     }
@@ -366,7 +433,10 @@ new file mode 100644
             vec![
                 Row::File("n.txt".into()),
                 Row::Hunk("@@ -0,0 +1 @@".into()),
-                Row::Line { left: None, right: cell(1, "hi", Kind::Add) },
+                Row::Line {
+                    left: None,
+                    right: cell(1, "hi", Kind::Add)
+                },
             ]
         );
     }
@@ -379,7 +449,10 @@ similarity index 90%
 rename from old.rs
 rename to new.rs
 ";
-        assert_eq!(parse(input.as_bytes()), vec![Row::File("old.rs → new.rs".into())]);
+        assert_eq!(
+            parse(input.as_bytes()),
+            vec![Row::File("old.rs → new.rs".into())]
+        );
     }
 
     #[test]
@@ -427,7 +500,10 @@ diff --git a/g b/g
         let b: String = (0..5000).map(|i| format!("a{}.b{};", i, i % 89)).collect();
         let start = std::time::Instant::now();
         let (ea, eb) = word_emph(&a, &b);
-        assert!(start.elapsed().as_secs() < 2, "intraline diff not time-bounded");
+        assert!(
+            start.elapsed().as_secs() < 2,
+            "intraline diff not time-bounded"
+        );
         for (ranges, s) in [(&ea, &a), (&eb, &b)] {
             for &(lo, hi) in ranges.iter() {
                 assert!(hi <= s.len() && s.is_char_boundary(lo) && s.is_char_boundary(hi));
@@ -468,7 +544,11 @@ new file mode 100644
 +hi
 ";
         let rows = parse(input.as_bytes());
-        assert!(!rows.iter().any(|r| matches!(r, Row::Raw(t) if t.contains("new file mode"))));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, Row::Raw(t) if t.contains("new file mode")))
+        );
     }
 
     #[test]

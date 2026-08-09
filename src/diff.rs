@@ -90,15 +90,22 @@ impl Parser {
             return;
         }
         if line.starts_with("@@ ") && (self.in_header || self.in_hunk) {
-            if let Some((old, new)) = hunk_starts(line) {
-                self.flush_pairs();
-                self.rows.push(Row::Hunk(line.to_string()));
-                self.old_no = old;
-                self.new_no = new;
-                self.in_hunk = true;
-                self.in_header = false;
-                return;
+            self.flush_pairs();
+            self.in_header = false;
+            match hunk_starts(line) {
+                Some((old, new)) => {
+                    self.rows.push(Row::Hunk(line.to_string()));
+                    self.old_no = old;
+                    self.new_no = new;
+                    self.in_hunk = true;
+                }
+                None => {
+                    // malformed hunk header: degrade to visible Raw, never swallow the file
+                    self.rows.push(Row::Raw(line.to_string()));
+                    self.in_hunk = false;
+                }
             }
+            return;
         }
         if self.in_header {
             self.header_line(line);
@@ -149,8 +156,6 @@ impl Parser {
                 };
                 self.set_title(name);
             }
-        } else if line.strip_prefix("rename to ").is_some() {
-            // combined with "rename from" below via lookback on current title
         } else if let Some(from) = line.strip_prefix("rename from ") {
             self.set_title(from.to_string());
         } else if line.starts_with("Binary files ") {
@@ -209,9 +214,14 @@ fn hunk_starts(line: &str) -> Option<(u32, u32)> {
     Some((old, new))
 }
 
-fn word_emph(a: &str, b: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+type Ranges = Vec<(usize, usize)>;
+
+fn word_emph(a: &str, b: &str) -> (Ranges, Ranges) {
     use similar::ChangeTag;
-    let td = similar::TextDiff::from_unicode_words(a, b);
+    // bounded: unminified-bundle-sized lines would otherwise freeze the TUI for minutes
+    let td = similar::TextDiff::configure()
+        .timeout(std::time::Duration::from_millis(5))
+        .diff_unicode_words(a, b);
     let (mut ai, mut bi) = (0usize, 0usize);
     let (mut ea, mut eb) = (Vec::new(), Vec::new());
     for ch in td.iter_all_changes() {
@@ -369,6 +379,42 @@ Binary files a/img.png and b/img.png differ
                 Row::Raw("Binary files a/img.png and b/img.png differ".into()),
             ]
         );
+    }
+
+    #[test]
+    fn malformed_hunk_header_degrades_to_raw_not_silence() {
+        let input = "\
+diff --git a/g b/g
+--- a/g
++++ b/g
+@@ -x,1 +1,1 @@
+-a
++b
+";
+        let rows = parse(input.as_bytes());
+        assert_eq!(
+            rows,
+            vec![
+                Row::File("g".into()),
+                Row::Raw("@@ -x,1 +1,1 @@".into()),
+                Row::Raw("-a".into()),
+                Row::Raw("+b".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn huge_line_pair_completes_fast_with_valid_ranges() {
+        let a: String = (0..5000).map(|i| format!("a{}.b{};", i, i % 97)).collect();
+        let b: String = (0..5000).map(|i| format!("a{}.b{};", i, i % 89)).collect();
+        let start = std::time::Instant::now();
+        let (ea, eb) = word_emph(&a, &b);
+        assert!(start.elapsed().as_secs() < 2, "intraline diff not time-bounded");
+        for (ranges, s) in [(&ea, &a), (&eb, &b)] {
+            for &(lo, hi) in ranges.iter() {
+                assert!(hi <= s.len() && s.is_char_boundary(lo) && s.is_char_boundary(hi));
+            }
+        }
     }
 
     #[test]

@@ -12,15 +12,26 @@ use crate::diff::{Cell, Kind, Row};
 pub struct App {
     pub rows: Vec<Row>,
     pub scroll: usize,
+    gutter_w: usize,
 }
 
 impl App {
     pub fn new(rows: Vec<Row>) -> Self {
-        Self { rows, scroll: 0 }
-    }
-
-    pub fn max_scroll(&self) -> usize {
-        self.rows.len().saturating_sub(1)
+        let max_no = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Line { left, right } => left.iter().chain(right.iter()).map(|c| c.no).max(),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let mut digits = 1;
+        let mut n = max_no;
+        while n >= 10 {
+            n /= 10;
+            digits += 1;
+        }
+        Self { rows, scroll: 0, gutter_w: digits.max(4) + 1 }
     }
 
     /// index of the next/prev `Row::File` relative to current scroll
@@ -71,7 +82,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .iter()
         .skip(app.scroll)
         .take(body_h as usize)
-        .map(|row| render_row(row, left_w, right_w))
+        .map(|row| render_row(row, left_w, right_w, app.gutter_w))
         .collect();
 
     let body = Rect { x: area.x, y: area.y, width: area.width, height: body_h };
@@ -81,28 +92,29 @@ pub fn draw(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(Line::styled(FOOTER, dim())), footer);
 }
 
-fn render_row(row: &Row, left_w: usize, right_w: usize) -> Line<'static> {
+fn render_row(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> Line<'static> {
     match row {
         Row::File(t) => Line::styled(t.clone(), Style::default().add_modifier(Modifier::BOLD)),
         Row::Hunk(h) => Line::styled(h.clone(), dim()),
         Row::Raw(r) => Line::styled(r.clone(), dim()),
         Row::Line { left, right } => {
-            let mut spans = cell_spans(left.as_ref(), left_w);
+            let mut spans = cell_spans(left.as_ref(), left_w, gutter_w);
             spans.push(Span::styled("│", dim()));
-            spans.extend(cell_spans(right.as_ref(), right_w));
+            spans.extend(cell_spans(right.as_ref(), right_w, gutter_w));
             Line::from(spans)
         }
     }
 }
 
-fn cell_spans(cell: Option<&Cell>, width: usize) -> Vec<Span<'static>> {
+fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'static>> {
     let Some(c) = cell else {
         return vec![Span::raw(" ".repeat(width))];
     };
     let base = base_style(c.kind);
     let emph = emph_style(c.kind);
-    let gutter_w = 5.min(width);
-    let mut spans = vec![Span::styled(format!("{:>4} ", c.no)[..].chars().take(gutter_w).collect::<String>(), dim())];
+    let gutter_w = gutter_w.min(width);
+    let g = format!("{:>w$} ", c.no, w = gutter_w.saturating_sub(1));
+    let mut spans = vec![Span::styled(g.chars().take(gutter_w).collect::<String>(), dim())];
     let budget = width - gutter_w;
 
     // does the expanded text fit? (tab = 4 cols)
@@ -119,7 +131,11 @@ fn cell_spans(cell: Option<&Cell>, width: usize) -> Vec<Span<'static>> {
         if used + cw > budget_eff {
             break;
         }
-        let in_emph = c.emph.iter().any(|&(s, e)| bidx >= s && bidx < e);
+        let in_emph = c
+            .emph
+            .iter()
+            .take_while(|&&(s, _)| s <= bidx)
+            .any(|&(s, e)| bidx >= s && bidx < e);
         if in_emph != cur_emph && !cur.is_empty() {
             spans.push(Span::styled(std::mem::take(&mut cur), if cur_emph { emph } else { base }));
         }
@@ -215,6 +231,16 @@ diff --git a/f.rs b/f.rs
                 " j/k · ctrl-d/u · n/p · g/G · q".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn six_digit_line_numbers_render_in_full() {
+        let app = App::new(vec![Row::Line {
+            left: Some(crate::diff::Cell { no: 100000, text: "hello".into(), kind: crate::diff::Kind::Del, emph: vec![] }),
+            right: None,
+        }]);
+        let lines = render(40, 2, &app);
+        assert!(lines[0].starts_with("100000 hello"), "gutter truncated the line number: {:?}", lines[0]);
     }
 
     #[test]

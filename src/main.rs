@@ -51,19 +51,22 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
             if k.kind != KeyEventKind::Press {
                 continue;
             }
-            let half = (term.size()?.height / 2) as usize;
+            let h = term.size()?.height as usize;
+            let half = h / 2;
+            // stop scrolling once the last row reaches the bottom, not the top
+            let max = app.rows.len().saturating_sub(h.saturating_sub(1));
             let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
             match k.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Char('c') if ctrl => return Ok(()),
-                KeyCode::Char('j') | KeyCode::Down => app.scroll = (app.scroll + 1).min(app.max_scroll()),
+                KeyCode::Char('j') | KeyCode::Down => app.scroll = (app.scroll + 1).min(max),
                 KeyCode::Char('k') | KeyCode::Up => app.scroll = app.scroll.saturating_sub(1),
-                KeyCode::Char('d') if ctrl => app.scroll = (app.scroll + half).min(app.max_scroll()),
+                KeyCode::Char('d') if ctrl => app.scroll = (app.scroll + half).min(max),
                 KeyCode::Char('u') if ctrl => app.scroll = app.scroll.saturating_sub(half),
-                KeyCode::PageDown => app.scroll = (app.scroll + half).min(app.max_scroll()),
+                KeyCode::PageDown => app.scroll = (app.scroll + half).min(max),
                 KeyCode::PageUp => app.scroll = app.scroll.saturating_sub(half),
                 KeyCode::Char('g') => app.scroll = 0,
-                KeyCode::Char('G') => app.scroll = app.max_scroll(),
+                KeyCode::Char('G') => app.scroll = max,
                 KeyCode::Char('n') => {
                     if let Some(i) = app.file_jump(true) {
                         app.scroll = i;

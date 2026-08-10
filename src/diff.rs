@@ -84,6 +84,9 @@ impl Parser {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             self.flush_pairs();
             self.flush_status();
+            if !self.rows.is_empty() {
+                self.rows.push(Row::Raw(String::new())); // blank gap between file sections
+            }
             let name = rest.rfind(" b/").map(|p| &rest[p + 3..]).unwrap_or(rest);
             self.file_row = Some(self.rows.len());
             self.rows.push(Row::File(name.to_string()));
@@ -466,6 +469,7 @@ Binary files a/img.png and b/img.png differ
             parse(input.as_bytes()),
             vec![
                 Row::Raw("garbage before anything".into()),
+                Row::Raw("".into()),
                 Row::File("img.png".into()),
                 Row::Raw("Binary files a/img.png and b/img.png differ".into()),
             ]
@@ -510,7 +514,12 @@ diff --git a/g b/g
             }
             // cell_spans' take_while cap silently depends on ascending, non-overlapping ranges
             for w in ranges.windows(2) {
-                assert!(w[0].1 <= w[1].0, "ranges out of order: {:?} then {:?}", w[0], w[1]);
+                assert!(
+                    w[0].1 <= w[1].0,
+                    "ranges out of order: {:?} then {:?}",
+                    w[0],
+                    w[1]
+                );
             }
         }
     }
@@ -530,6 +539,7 @@ new mode 100755
             vec![
                 Row::File("e".into()),
                 Row::Raw("new file mode 100644".into()),
+                Row::Raw("".into()),
                 Row::File("x".into()),
                 Row::Raw("old mode 100644".into()),
                 Row::Raw("new mode 100755".into()),

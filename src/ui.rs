@@ -116,7 +116,15 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn render_row(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> Line<'static> {
     match row {
-        Row::File(t) => Line::styled(t.clone(), Style::default().add_modifier(Modifier::BOLD)),
+        Row::File(t) => {
+            let w = left_w + 1 + right_w;
+            Line::styled(
+                format!("{t:<w$}"),
+                Style::default()
+                    .bg(Color::Indexed(236))
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
         Row::Hunk(h) => Line::styled(h.clone(), dim()),
         Row::Raw(r) => Line::styled(r.clone(), dim()),
         Row::Line { left, right } => {
@@ -323,8 +331,17 @@ diff --git a/f.rs b/f.rs
     fn file_jump_finds_next_header() {
         let two = format!("{SMALL}{}", SMALL.replace("f.rs", "g.rs"));
         let mut app = App::new(crate::diff::parse(two.as_bytes()));
-        assert_eq!(app.file_jump(true), Some(4)); // second File row
-        app.scroll = 4;
+        assert_eq!(app.file_jump(true), Some(5)); // second File row, after the blank gap
+        app.scroll = 5;
         assert_eq!(app.file_jump(false), Some(0));
+    }
+
+    #[test]
+    fn file_header_bar_spans_full_width() {
+        let app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        let mut term = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(buf[(39u16, 0u16)].style().bg, Some(Color::Indexed(236)));
     }
 }

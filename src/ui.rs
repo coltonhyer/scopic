@@ -59,13 +59,20 @@ impl App {
         }
     }
 
-    pub fn max_scroll(&self, viewport_h: usize) -> usize {
-        self.rows.len().saturating_sub(viewport_h.saturating_sub(1))
-    }
-
-    /// file jumps and shrinking resizes can leave `scroll` past the bound
-    pub fn clamp_scroll(&mut self, viewport_h: usize) {
-        self.scroll = self.scroll.min(self.max_scroll(viewport_h));
+    /// smallest scroll where the tail still fits the viewport (a wrapped last
+    /// page may run short); needs the width to sum wrapped row heights
+    pub fn max_scroll(&self, w: usize, viewport_h: usize) -> usize {
+        let body_h = viewport_h.saturating_sub(1);
+        let (lw, rw) = panes(w);
+        let mut h = 0usize;
+        for i in (0..self.rows.len()).rev() {
+            h += row_height(&self.rows[i], lw, rw, self.gutter_w);
+            if h > body_h {
+                // a tail row taller than the body must stay reachable, clipped
+                return (i + 1).min(self.rows.len() - 1);
+            }
+        }
+        0
     }
 
     /// index of the next/prev `Row::File` relative to current scroll
@@ -108,6 +115,22 @@ fn emph_style(kind: Kind) -> Style {
     }
 }
 
+/// left/right pane widths for a terminal width
+fn panes(w: usize) -> (usize, usize) {
+    let left = w.saturating_sub(1) / 2;
+    (left, w.saturating_sub(1 + left))
+}
+
+// ponytail: counts by building the spans; fine at diff sizes
+fn row_height(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> usize {
+    match row {
+        Row::Line { left, right } => cell_segments(left.as_ref(), left_w, gutter_w)
+            .len()
+            .max(cell_segments(right.as_ref(), right_w, gutter_w).len()),
+        _ => 1,
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     if area.height == 0 {
@@ -115,17 +138,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     let body_h = area.height.saturating_sub(1);
     let w = area.width as usize;
-    let left_w = w.saturating_sub(1) / 2;
-    let right_w = w.saturating_sub(1 + left_w);
+    let (left_w, right_w) = panes(w);
 
     let lines: Vec<Line> = app
         .rows
         .iter()
         .enumerate()
         .skip(app.scroll)
-        .take(body_h as usize)
-        .map(|(i, row)| {
-            render_row(
+        .flat_map(|(i, row)| {
+            render_rows(
                 row,
                 left_w,
                 right_w,
@@ -133,6 +154,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 app.stats.get(&i).copied(),
             )
         })
+        .take(body_h as usize)
         .collect();
 
     let body = Rect {
@@ -152,13 +174,13 @@ pub fn draw(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(Line::styled(FOOTER, dim())), footer);
 }
 
-fn render_row(
+fn render_rows(
     row: &Row,
     left_w: usize,
     right_w: usize,
     gutter_w: usize,
     stats: Option<(u32, u32)>,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     let w = left_w + 1 + right_w;
     match row {
         Row::File(t) => {
@@ -182,41 +204,54 @@ fn render_row(
                     .sum::<usize>();
             spans.push(Span::styled(" ".repeat(w.saturating_sub(used)), bar));
             spans.extend(counts);
-            Line::from(spans)
+            vec![Line::from(spans)]
         }
         // muted GitHub-dark hunk tint; non-truecolor terminals approximate to a dark gray
-        Row::Hunk(h) => Line::styled(format!("{h:<w$}"), dim().bg(Color::Rgb(20, 34, 56))),
-        Row::Raw(r) => Line::styled(r.clone(), dim()),
+        Row::Hunk(h) => vec![Line::styled(
+            format!("{h:<w$}"),
+            dim().bg(Color::Rgb(20, 34, 56)),
+        )],
+        Row::Raw(r) => vec![Line::styled(r.clone(), dim())],
         Row::Line { left, right } => {
-            let mut spans = cell_spans(left.as_ref(), left_w, gutter_w);
-            spans.push(Span::styled("│", dim()));
-            spans.extend(cell_spans(right.as_ref(), right_w, gutter_w));
-            Line::from(spans)
+            let ls = cell_segments(left.as_ref(), left_w, gutter_w);
+            let rs = cell_segments(right.as_ref(), right_w, gutter_w);
+            (0..ls.len().max(rs.len()))
+                .map(|i| {
+                    let mut spans = ls.get(i).cloned().unwrap_or_else(|| dead_fill(left_w));
+                    spans.push(Span::styled("│", dim()));
+                    spans.extend(rs.get(i).cloned().unwrap_or_else(|| dead_fill(right_w)));
+                    Line::from(spans)
+                })
+                .collect()
         }
     }
 }
 
-fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'static>> {
+// GitHub's "dead cell": the absent side of a one-sided change, and the
+// shorter side's overhang when the other pane wraps taller
+fn dead_fill(width: usize) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        " ".repeat(width),
+        Style::default().bg(Color::Indexed(234)),
+    )]
+}
+
+/// one pane of a row as visual lines, wrapped at the pane budget; the first
+/// segment carries the line number, continuations get a blank gutter
+fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Vec<Span<'static>>> {
     let Some(c) = cell else {
-        // absent side of a one-sided change: faint fill, GitHub's "dead cell"
-        return vec![Span::styled(
-            " ".repeat(width),
-            Style::default().bg(Color::Indexed(234)),
-        )];
+        return vec![dead_fill(width)];
     };
     let base = base_style(c.kind);
     let emph = emph_style(c.kind);
     let gutter_w = gutter_w.min(width);
-    let g = format!("{:>w$} ", c.no, w = gutter_w.saturating_sub(1));
-    let mut spans = vec![Span::styled(
-        g.chars().take(gutter_w).collect::<String>(),
-        base.fg(Color::DarkGray),
-    )];
     let budget = width - gutter_w;
+    let gutter_style = base.fg(Color::DarkGray);
+    let g = format!("{:>w$} ", c.no, w = gutter_w.saturating_sub(1));
 
-    // does the expanded text fit? (tab = 4 cols)
-    // ponytail: per-char widths; ZWJ emoji clusters (👩‍💻) over-count and shift the
-    // divider on that row only — switch to grapheme segmentation if it ever matters
+    // tab = 4 cols
+    // ponytail: per-char widths; ZWJ emoji clusters (👩‍💻) over-count and wrap
+    // early on that row only — switch to grapheme segmentation if it ever matters
     let col = |ch: char| {
         if ch == '\t' {
             4
@@ -224,21 +259,46 @@ fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'s
             ch.width().unwrap_or(0)
         }
     };
-    let full: usize = c.text.chars().map(col).sum();
-    let fits = full <= budget;
-    let budget_eff = if fits {
-        budget
-    } else {
-        budget.saturating_sub(1)
-    };
 
+    // continuations hang at the line's own indent; dropped when the pane is too
+    // narrow to fit the indent plus the widest char (tab, 4), which would
+    // overflow the pane and shift the divider
+    let indent: usize = c
+        .text
+        .chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .map(col)
+        .sum();
+    let indent = if indent + 4 <= budget { indent } else { 0 };
+
+    let mut segs: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(
+        g.chars().take(gutter_w).collect::<String>(),
+        gutter_style,
+    )];
     let mut used = 0usize;
     let mut cur = String::new();
     let mut cur_emph = false;
     for (bidx, ch) in c.text.char_indices() {
         let cw = col(ch);
-        if used + cw > budget_eff {
-            break;
+        if cw > budget {
+            // ponytail: char wider than the whole pane (tab in a sliver); drop it
+            continue;
+        }
+        if used + cw > budget && used > 0 {
+            // segment full: flush and start a continuation line
+            if !cur.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut cur),
+                    if cur_emph { emph } else { base },
+                ));
+            }
+            if used < budget {
+                spans.push(Span::styled(" ".repeat(budget - used), base));
+            }
+            segs.push(std::mem::take(&mut spans));
+            spans.push(Span::styled(" ".repeat(gutter_w + indent), gutter_style));
+            used = indent;
         }
         let in_emph = c
             .emph
@@ -262,14 +322,11 @@ fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'s
     if !cur.is_empty() {
         spans.push(Span::styled(cur, if cur_emph { emph } else { base }));
     }
-    if !fits && budget > 0 {
-        spans.push(Span::styled("…", dim()));
-        used += 1;
-    }
     if used < budget {
         spans.push(Span::styled(" ".repeat(budget - used), base));
     }
-    spans
+    segs.push(spans);
+    segs
 }
 
 #[cfg(test)]
@@ -322,7 +379,7 @@ diff --git a/f.rs b/f.rs
     }
 
     #[test]
-    fn scroll_skips_rows_and_truncates_long_lines() {
+    fn scroll_skips_rows_and_wraps_long_lines() {
         let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
         app.rows.push(Row::Line {
             left: Some(crate::diff::Cell {
@@ -335,23 +392,120 @@ diff --git a/f.rs b/f.rs
         });
         app.scroll = 4;
         let lines = render(40, 3, &app);
+        // 14-col budget: the line wraps, continuation gets a blank gutter
         assert_eq!(
             lines,
             vec![
-                "   3 a very long l…│".to_string(),
-                "".to_string(),
+                "   3 a very long li│".to_string(),
+                "     ne that cannot│".to_string(),
                 " j/k · ctrl-d/u · n/p · g/G · q".to_string(),
             ]
         );
     }
 
     #[test]
-    fn clamp_scroll_respects_viewport() {
+    fn wrapped_continuations_keep_indent() {
+        let app = App::new(vec![Row::Line {
+            left: Some(crate::diff::Cell {
+                no: 1,
+                text: "    abcdefghij0123456789".into(),
+                kind: crate::diff::Kind::Del,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        let lines = render(40, 3, &app);
+        assert_eq!(lines[0], "   1     abcdefghij│");
+        assert_eq!(lines[1], "         0123456789│"); // blank gutter + 4-col hang
+    }
+
+    #[test]
+    fn max_scroll_accounts_for_wrapped_heights() {
+        let mut rows: Vec<Row> = (0..5).map(|i| Row::Raw(format!("r{i}"))).collect();
+        rows.push(Row::Line {
+            left: Some(crate::diff::Cell {
+                no: 1,
+                text: "a very long line that cannot fit in the pane".into(),
+                kind: crate::diff::Kind::Del,
+                emph: vec![],
+            }),
+            right: None,
+        });
+        let app = App::new(rows);
+        // 40x5 terminal, 4 body lines: the tail row alone wraps to 4, so G stops on it
+        assert_eq!(app.max_scroll(40, 5), 5);
+    }
+
+    #[test]
+    fn max_scroll_bounds_flat_rows() {
         let rows: Vec<Row> = (0..10).map(|i| Row::Raw(format!("r{i}"))).collect();
-        let mut app = App::new(rows);
-        app.scroll = 9; // e.g. `n` jumped to a header near the end
-        app.clamp_scroll(5); // 5-row terminal: 4 body rows -> max scroll 6
-        assert_eq!(app.scroll, 6);
+        let app = App::new(rows);
+        // 5-row terminal: 4 body rows -> max scroll 6
+        assert_eq!(app.max_scroll(40, 5), 6);
+    }
+
+    #[test]
+    fn max_scroll_never_scrolls_past_a_tall_tail_row() {
+        let mut app = App::new(vec![Row::Line {
+            left: Some(crate::diff::Cell {
+                no: 1,
+                text: "a very long line that cannot fit in the pane".into(),
+                kind: crate::diff::Kind::Del,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        // the only row wraps to 4 lines, body is 3: G must land on it, not past it
+        app.scroll = app.max_scroll(40, 4);
+        assert_eq!(app.scroll, 0);
+        let lines = render(40, 4, &app);
+        assert!(!lines[0].is_empty(), "blank body at max scroll");
+    }
+
+    #[test]
+    fn emph_survives_wrap_boundary() {
+        let app = App::new(vec![Row::Line {
+            left: Some(crate::diff::Cell {
+                no: 1,
+                text: "aaaaaaaaaaaaXXXX".into(), // budget 14 splits the emph run
+                kind: crate::diff::Kind::Del,
+                emph: vec![(12, 16)],
+            }),
+            right: None,
+        }]);
+        let mut term = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        // emph bg on the last cell before the wrap and the first text cell after
+        assert_eq!(buf[(17u16, 0u16)].style().bg, Some(Color::Rgb(107, 43, 43)));
+        assert_eq!(buf[(5u16, 1u16)].style().bg, Some(Color::Rgb(107, 43, 43)));
+    }
+
+    #[test]
+    fn uneven_two_sided_wrap_keeps_divider_and_fills_short_side() {
+        let app = App::new(vec![Row::Line {
+            left: Some(crate::diff::Cell {
+                no: 1,
+                text: "left side text that wraps to three lines here".into(),
+                kind: crate::diff::Kind::Del,
+                emph: vec![],
+            }),
+            right: Some(crate::diff::Cell {
+                no: 1,
+                text: "short right".into(),
+                kind: crate::diff::Kind::Add,
+                emph: vec![],
+            }),
+        }]);
+        let mut term = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        // left wraps to 4 lines; the divider must not drift on any of them
+        for y in 0..4u16 {
+            assert_eq!(buf[(19u16, y)].symbol(), "│", "divider drifted on line {y}");
+        }
+        // the right pane exists but is shorter: its continuations are dead-filled
+        assert_eq!(buf[(20u16, 1u16)].style().bg, Some(Color::Indexed(234)));
     }
 
     #[test]

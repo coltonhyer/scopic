@@ -63,10 +63,12 @@ fn main() -> Result<()> {
 
 fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
     loop {
-        let h = term.size()?.height as usize;
+        let size = term.size()?;
+        let (w, h) = (size.width as usize, size.height as usize);
         let half = h / 2;
-        let max = app.max_scroll(h);
-        app.clamp_scroll(h);
+        // file jumps and shrinking resizes can leave scroll past the bound
+        let max = app.max_scroll(w, h);
+        app.scroll = app.scroll.min(max);
         term.draw(|f| ui::draw(f, app))?;
         match event::read()? {
             Event::Mouse(m) => match m.kind {

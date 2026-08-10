@@ -59,11 +59,14 @@ fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
+// GitHub-dark tints: red/green at 15% (lines) and 40% (word emph) over the page bg.
+// ponytail: truecolor only — non-truecolor terminals quantize these to near-gray
+// and add/del become hard to tell apart; revert to Indexed(52/22/88/28) if that bites
 fn base_style(kind: Kind) -> Style {
     match kind {
         Kind::Ctx => Style::default(),
-        Kind::Del => Style::default().bg(Color::Indexed(52)),
-        Kind::Add => Style::default().bg(Color::Indexed(22)),
+        Kind::Del => Style::default().bg(Color::Rgb(48, 27, 31)),
+        Kind::Add => Style::default().bg(Color::Rgb(18, 38, 30)),
     }
 }
 
@@ -71,10 +74,10 @@ fn emph_style(kind: Kind) -> Style {
     match kind {
         Kind::Ctx => Style::default(),
         Kind::Del => Style::default()
-            .bg(Color::Indexed(88))
+            .bg(Color::Rgb(107, 43, 43))
             .add_modifier(Modifier::BOLD),
         Kind::Add => Style::default()
-            .bg(Color::Indexed(28))
+            .bg(Color::Rgb(26, 74, 41))
             .add_modifier(Modifier::BOLD),
     }
 }
@@ -363,8 +366,8 @@ diff --git a/f.rs b/f.rs
         term.draw(|f| draw(f, &app)).unwrap();
         let buf = term.backend().buffer().clone();
         // row 3 pairs the del/add line: both gutters carry their row's bg
-        assert_eq!(buf[(0u16, 3u16)].style().bg, Some(Color::Indexed(52)));
-        assert_eq!(buf[(20u16, 3u16)].style().bg, Some(Color::Indexed(22)));
+        assert_eq!(buf[(0u16, 3u16)].style().bg, Some(Color::Rgb(48, 27, 31)));
+        assert_eq!(buf[(20u16, 3u16)].style().bg, Some(Color::Rgb(18, 38, 30)));
     }
 
     #[test]

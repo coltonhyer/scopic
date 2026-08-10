@@ -187,6 +187,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "filedescriptor",
  "mio",
  "parking_lot",
  "rustix",
@@ -1130,6 +1131,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "scopic"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "ratatui",
  "similar",
  "unicode-width",

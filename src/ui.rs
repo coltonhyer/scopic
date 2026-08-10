@@ -146,7 +146,7 @@ fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'s
     let g = format!("{:>w$} ", c.no, w = gutter_w.saturating_sub(1));
     let mut spans = vec![Span::styled(
         g.chars().take(gutter_w).collect::<String>(),
-        dim(),
+        base.fg(Color::DarkGray),
     )];
     let budget = width - gutter_w;
 
@@ -334,6 +334,17 @@ diff --git a/f.rs b/f.rs
         assert_eq!(app.file_jump(true), Some(5)); // second File row, after the blank gap
         app.scroll = 5;
         assert_eq!(app.file_jump(false), Some(0));
+    }
+
+    #[test]
+    fn gutter_matches_line_background() {
+        let app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        // row 3 pairs the del/add line: both gutters carry their row's bg
+        assert_eq!(buf[(0u16, 3u16)].style().bg, Some(Color::Indexed(52)));
+        assert_eq!(buf[(20u16, 3u16)].style().bg, Some(Color::Indexed(22)));
     }
 
     #[test]

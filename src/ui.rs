@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -13,6 +15,8 @@ pub struct App {
     pub rows: Vec<Row>,
     pub scroll: usize,
     gutter_w: usize,
+    /// File header row index → (added, deleted) line counts for its section
+    stats: HashMap<usize, (u32, u32)>,
 }
 
 impl App {
@@ -26,10 +30,32 @@ impl App {
             .max()
             .unwrap_or(0);
         let digits = (max_no.max(1).ilog10() as usize + 1).max(4);
+        let mut stats = HashMap::new();
+        let mut cur = None;
+        for (i, r) in rows.iter().enumerate() {
+            match r {
+                Row::File(_) => {
+                    stats.insert(i, (0, 0));
+                    cur = Some(i);
+                }
+                Row::Line { left, right } => {
+                    if let Some(e) = cur.and_then(|f| stats.get_mut(&f)) {
+                        if matches!(left, Some(c) if c.kind == Kind::Del) {
+                            e.1 += 1;
+                        }
+                        if matches!(right, Some(c) if c.kind == Kind::Add) {
+                            e.0 += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         Self {
             rows,
             scroll: 0,
             gutter_w: digits + 1,
+            stats,
         }
     }
 
@@ -95,9 +121,18 @@ pub fn draw(f: &mut Frame, app: &App) {
     let lines: Vec<Line> = app
         .rows
         .iter()
+        .enumerate()
         .skip(app.scroll)
         .take(body_h as usize)
-        .map(|row| render_row(row, left_w, right_w, app.gutter_w))
+        .map(|(i, row)| {
+            render_row(
+                row,
+                left_w,
+                right_w,
+                app.gutter_w,
+                app.stats.get(&i).copied(),
+            )
+        })
         .collect();
 
     let body = Rect {
@@ -117,18 +152,37 @@ pub fn draw(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(Line::styled(FOOTER, dim())), footer);
 }
 
-fn render_row(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> Line<'static> {
+fn render_row(
+    row: &Row,
+    left_w: usize,
+    right_w: usize,
+    gutter_w: usize,
+    stats: Option<(u32, u32)>,
+) -> Line<'static> {
     let w = left_w + 1 + right_w;
     match row {
         Row::File(t) => {
             let bar = Style::default().bg(Color::Indexed(236));
             let split = t.rfind('/').map_or(0, |i| i + 1);
-            let pad = w.saturating_sub(t.chars().count());
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(t[..split].to_string(), bar.fg(Color::DarkGray)),
                 Span::styled(t[split..].to_string(), bar.add_modifier(Modifier::BOLD)),
-                Span::styled(" ".repeat(pad), bar),
-            ])
+            ];
+            let counts = match stats {
+                Some((a, d)) if a + d > 0 => vec![
+                    Span::styled(format!("+{a} "), bar.fg(Color::Green)),
+                    Span::styled(format!("-{d} "), bar.fg(Color::Red)),
+                ],
+                _ => vec![],
+            };
+            let used = t.chars().count()
+                + counts
+                    .iter()
+                    .map(|s| s.content.chars().count())
+                    .sum::<usize>();
+            spans.push(Span::styled(" ".repeat(w.saturating_sub(used)), bar));
+            spans.extend(counts);
+            Line::from(spans)
         }
         // muted GitHub-dark hunk tint; non-truecolor terminals approximate to a dark gray
         Row::Hunk(h) => Line::styled(format!("{h:<w$}"), dim().bg(Color::Rgb(20, 34, 56))),
@@ -255,7 +309,7 @@ diff --git a/f.rs b/f.rs
         assert_eq!(
             lines,
             vec![
-                "f.rs".to_string(),
+                format!("f.rs{}+1 -1", " ".repeat(30)),
                 "@@ -1,2 +1,2 @@".to_string(),
                 "   1 ctx           │   1 ctx".to_string(),
                 "   2 old line      │   2 new line".to_string(),
@@ -344,6 +398,19 @@ diff --git a/f.rs b/f.rs
         assert_eq!(app.file_jump(true), Some(5)); // second File row, after the blank gap
         app.scroll = 5;
         assert_eq!(app.file_jump(false), Some(0));
+    }
+
+    #[test]
+    fn header_counts_reset_per_file() {
+        let two = format!("{SMALL}{}", SMALL.replace("f.rs", "g.rs"));
+        let app = App::new(crate::diff::parse(two.as_bytes()));
+        let lines = render(40, 8, &app);
+        // a running total would show +2 -2 on the second header
+        assert!(
+            lines[5].starts_with("g.rs") && lines[5].ends_with("+1 -1"),
+            "{:?}",
+            lines[5]
+        );
     }
 
     #[test]

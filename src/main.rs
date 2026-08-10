@@ -27,7 +27,13 @@ fn main() -> Result<()> {
             print!("{HELP}");
             return Ok(());
         }
-        Some(path) => std::fs::read(path)?,
+        Some(path) => match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("scopic: {path}: {e}");
+                std::process::exit(1);
+            }
+        },
         None => {
             let mut buf = Vec::new();
             std::io::stdin().read_to_end(&mut buf)?;

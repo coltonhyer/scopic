@@ -190,7 +190,7 @@ fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'s
     if !cur.is_empty() {
         spans.push(Span::styled(cur, if cur_emph { emph } else { base }));
     }
-    if !fits {
+    if !fits && budget > 0 {
         spans.push(Span::styled("…", dim()));
         used += 1;
     }
@@ -280,6 +280,24 @@ diff --git a/f.rs b/f.rs
         app.scroll = 9; // e.g. `n` jumped to a header near the end
         app.clamp_scroll(5); // 5-row terminal: 4 body rows -> max scroll 6
         assert_eq!(app.scroll, 6);
+    }
+
+    #[test]
+    fn zero_budget_pane_never_overflows_into_divider() {
+        let app = App::new(vec![Row::Line {
+            left: Some(crate::diff::Cell {
+                no: 1,
+                text: "long enough to overflow".into(),
+                kind: crate::diff::Kind::Del,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        // width 11: left pane 5 == gutter width, so the text budget is exactly 0
+        let mut term = Terminal::new(TestBackend::new(11, 2)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(buf[(5u16, 0u16)].symbol(), "│");
     }
 
     #[test]

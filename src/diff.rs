@@ -136,8 +136,8 @@ impl Parser {
                             emph: vec![],
                         }),
                     });
-                    self.old_no += 1;
-                    self.new_no += 1;
+                    self.old_no = self.old_no.saturating_add(1);
+                    self.new_no = self.new_no.saturating_add(1);
                 }
                 Some('-') => {
                     self.dels.push(Cell {
@@ -146,7 +146,7 @@ impl Parser {
                         kind: Kind::Del,
                         emph: vec![],
                     });
-                    self.old_no += 1;
+                    self.old_no = self.old_no.saturating_add(1);
                 }
                 Some('+') => {
                     self.adds.push(Cell {
@@ -155,7 +155,7 @@ impl Parser {
                         kind: Kind::Add,
                         emph: vec![],
                     });
-                    self.new_no += 1;
+                    self.new_no = self.new_no.saturating_add(1);
                 }
                 Some('\\') => {} // "\ No newline at end of file"
                 _ => {
@@ -508,6 +508,10 @@ diff --git a/g b/g
             for &(lo, hi) in ranges.iter() {
                 assert!(hi <= s.len() && s.is_char_boundary(lo) && s.is_char_boundary(hi));
             }
+            // cell_spans' take_while cap silently depends on ascending, non-overlapping ranges
+            for w in ranges.windows(2) {
+                assert!(w[0].1 <= w[1].0, "ranges out of order: {:?} then {:?}", w[0], w[1]);
+            }
         }
     }
 
@@ -549,6 +553,24 @@ new file mode 100644
                 .iter()
                 .any(|r| matches!(r, Row::Raw(t) if t.contains("new file mode")))
         );
+    }
+
+    #[test]
+    fn huge_hunk_start_numbers_saturate_instead_of_panicking() {
+        let input = "\
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -4294967294,3 +1,3 @@
+ a
+ b
+ c
+";
+        let rows = parse(input.as_bytes());
+        let Row::Line { left: Some(l), .. } = &rows[4] else {
+            panic!("expected line row, got {:?}", rows[4]);
+        };
+        assert_eq!(l.no, u32::MAX);
     }
 
     #[test]

@@ -115,17 +115,16 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn render_row(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> Line<'static> {
+    let w = left_w + 1 + right_w;
     match row {
-        Row::File(t) => {
-            let w = left_w + 1 + right_w;
-            Line::styled(
-                format!("{t:<w$}"),
-                Style::default()
-                    .bg(Color::Indexed(236))
-                    .add_modifier(Modifier::BOLD),
-            )
-        }
-        Row::Hunk(h) => Line::styled(h.clone(), dim()),
+        Row::File(t) => Line::styled(
+            format!("{t:<w$}"),
+            Style::default()
+                .bg(Color::Indexed(236))
+                .add_modifier(Modifier::BOLD),
+        ),
+        // muted GitHub-dark hunk tint; non-truecolor terminals approximate to a dark gray
+        Row::Hunk(h) => Line::styled(format!("{h:<w$}"), dim().bg(Color::Rgb(20, 34, 56))),
         Row::Raw(r) => Line::styled(r.clone(), dim()),
         Row::Line { left, right } => {
             let mut spans = cell_spans(left.as_ref(), left_w, gutter_w);
@@ -375,5 +374,7 @@ diff --git a/f.rs b/f.rs
         term.draw(|f| draw(f, &app)).unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(buf[(39u16, 0u16)].style().bg, Some(Color::Indexed(236)));
+        // hunk band right below it, also full width
+        assert_eq!(buf[(39u16, 1u16)].style().bg, Some(Color::Rgb(20, 34, 56)));
     }
 }

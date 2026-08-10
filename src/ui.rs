@@ -138,7 +138,11 @@ fn render_row(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> Line
 
 fn cell_spans(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Span<'static>> {
     let Some(c) = cell else {
-        return vec![Span::raw(" ".repeat(width))];
+        // absent side of a one-sided change: faint fill, GitHub's "dead cell"
+        return vec![Span::styled(
+            " ".repeat(width),
+            Style::default().bg(Color::Indexed(234)),
+        )];
     };
     let base = base_style(c.kind);
     let emph = emph_style(c.kind);
@@ -334,6 +338,23 @@ diff --git a/f.rs b/f.rs
         assert_eq!(app.file_jump(true), Some(5)); // second File row, after the blank gap
         app.scroll = 5;
         assert_eq!(app.file_jump(false), Some(0));
+    }
+
+    #[test]
+    fn absent_side_gets_faint_fill() {
+        let app = App::new(vec![Row::Line {
+            left: Some(crate::diff::Cell {
+                no: 1,
+                text: "gone".into(),
+                kind: crate::diff::Kind::Del,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(buf[(20u16, 0u16)].style().bg, Some(Color::Indexed(234)));
     }
 
     #[test]

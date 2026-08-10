@@ -120,12 +120,16 @@ pub fn draw(f: &mut Frame, app: &App) {
 fn render_row(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> Line<'static> {
     let w = left_w + 1 + right_w;
     match row {
-        Row::File(t) => Line::styled(
-            format!("{t:<w$}"),
-            Style::default()
-                .bg(Color::Indexed(236))
-                .add_modifier(Modifier::BOLD),
-        ),
+        Row::File(t) => {
+            let bar = Style::default().bg(Color::Indexed(236));
+            let split = t.rfind('/').map_or(0, |i| i + 1);
+            let pad = w.saturating_sub(t.chars().count());
+            Line::from(vec![
+                Span::styled(t[..split].to_string(), bar.fg(Color::DarkGray)),
+                Span::styled(t[split..].to_string(), bar.add_modifier(Modifier::BOLD)),
+                Span::styled(" ".repeat(pad), bar),
+            ])
+        }
         // muted GitHub-dark hunk tint; non-truecolor terminals approximate to a dark gray
         Row::Hunk(h) => Line::styled(format!("{h:<w$}"), dim().bg(Color::Rgb(20, 34, 56))),
         Row::Raw(r) => Line::styled(r.clone(), dim()),
@@ -340,6 +344,29 @@ diff --git a/f.rs b/f.rs
         assert_eq!(app.file_jump(true), Some(5)); // second File row, after the blank gap
         app.scroll = 5;
         assert_eq!(app.file_jump(false), Some(0));
+    }
+
+    #[test]
+    fn file_header_dims_directory_bolds_basename() {
+        let app = App::new(vec![Row::File("src/ui.rs".into())]);
+        let mut term = Terminal::new(TestBackend::new(20, 2)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        // "src/" dim, not bold
+        assert_eq!(buf[(0u16, 0u16)].style().fg, Some(Color::DarkGray));
+        assert!(
+            !buf[(0u16, 0u16)]
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        // "ui.rs" bold
+        assert!(
+            buf[(4u16, 0u16)]
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]

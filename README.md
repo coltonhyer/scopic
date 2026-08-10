@@ -1,7 +1,12 @@
 # scopic
 
-A side-by-side terminal viewer for git and jj diffs. Pipe a diff in, read it
-like the GitHub split view, press `q`.
+*-scopic*, from the Greek *skopein*, "to look at", is the suffix of viewing
+instruments: telescopic, microscopic, stereoscopic. This one is for diffs.
+
+A side-by-side terminal viewer for git and jj diffs, styled after the GitHub
+split view: per-file header bars with `+n -n` change counts, muted
+GitHub-dark colors, full-width hunk bands, intraline word highlights, dual
+line numbers.
 
 ```
 jj diff --git | scopic
@@ -9,25 +14,22 @@ git diff | scopic
 scopic changes.diff
 ```
 
-Intraline word highlights, dual line numbers, file-to-file jumping. Colored
-input is fine — ANSI codes are stripped before parsing. Anything scopic
-doesn't understand renders as dim text instead of erroring. Empty input exits
-silently, like a well-behaved pager.
+Colored input is fine; ANSI codes are stripped before parsing. Anything
+scopic doesn't understand renders as dim text rather than erroring. Empty
+input exits silently.
 
 ## Keys
 
 `j/k` scroll · `ctrl-d/u` half-page · `n/p` next/prev file · `g/G` top/bottom · `q` quit
 
-## Install
+## Install & hook up
 
 ```
 cargo install --path .
 ```
 
-## Use as the default diff pager
-
-**jj** — add to `~/.config/jj/config.toml` (scoped so `jj log` etc. keep the
-normal pager):
+**jj**, in `~/.config/jj/config.toml`, scoped so `jj log` etc. keep the
+normal pager:
 
 ```toml
 [[--scope]]
@@ -45,8 +47,12 @@ git config --global pager.show scopic
 
 Then `jj diff`, `jj show`, and `git diff` open scopic automatically.
 
-## Notes
+Two notes on looks:
 
-~500 lines, three source files, three dependencies. The heavier reviewed
-design this was descoped from is archived in the superstore ledger
-(`.agents/ledger.db`).
+- The palette uses truecolor. Terminals without RGB support (e.g. tmux
+  without `Tc`) quantize the tints toward gray.
+- Hunk headers show whatever context the diff carries. `git diff` adds
+  function names (better with `*.rs diff=rust` in `.gitattributes`);
+  `jj diff --git` doesn't emit them yet.
+
+Internals: [docs/internals.md](docs/internals.md).

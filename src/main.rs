@@ -1,12 +1,16 @@
 mod diff;
 mod ui;
 
-use std::io::Read;
+use std::{
+    io::{Read, Write},
+    process::{Command, Stdio},
+};
 
 use ratatui::crossterm::{
+    clipboard::CopyToClipboard,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseEventKind,
+        MouseButton, MouseEventKind,
     },
     execute,
 };
@@ -61,6 +65,28 @@ fn main() -> Result<()> {
     res
 }
 
+fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
+    if std::env::var_os("TMUX").is_some_and(|value| !value.is_empty()) {
+        let mut child = Command::new("tmux")
+            .args(["load-buffer", "-w", "-"])
+            .stdin(Stdio::piped())
+            .spawn()?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("tmux stdin unavailable"))?;
+        stdin.write_all(text.as_bytes())?;
+        drop(stdin);
+        let status = child.wait()?;
+        return status
+            .success()
+            .then_some(())
+            .ok_or_else(|| std::io::Error::other(format!("tmux exited with {status}")));
+    }
+
+    execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text))
+}
+
 fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
     loop {
         let size = term.size()?;
@@ -72,14 +98,52 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
         term.draw(|f| ui::draw(f, app))?;
         match event::read()? {
             Event::Mouse(m) => match m.kind {
-                MouseEventKind::ScrollDown => app.scroll = app.scroll.saturating_add(3),
-                MouseEventKind::ScrollUp => app.scroll = app.scroll.saturating_sub(3),
+                MouseEventKind::Down(MouseButton::Left)
+                    if !m.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    app.clear_status();
+                    app.begin_selection(m.column as usize, m.row as usize, w, h);
+                }
+                MouseEventKind::Drag(MouseButton::Left)
+                    if !m.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    app.drag_selection(m.column as usize, m.row as usize, w, h);
+                }
+                MouseEventKind::Up(MouseButton::Left)
+                    if !m.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    if let Some(text) = app.finish_selection() {
+                        let lines = text.split('\n').count();
+                        match copy_to_clipboard(&text) {
+                            Ok(()) => app.set_status(format!(
+                                " copied {lines} {}",
+                                if lines == 1 { "line" } else { "lines" }
+                            )),
+                            Err(error) => app.set_status(format!(" copy failed: {error}")),
+                        }
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    app.cancel_selection();
+                    app.clear_status();
+                    app.scroll = app.scroll.saturating_add(3);
+                }
+                MouseEventKind::ScrollUp => {
+                    app.cancel_selection();
+                    app.clear_status();
+                    app.scroll = app.scroll.saturating_sub(3);
+                }
+                MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::Drag(MouseButton::Left)
+                | MouseEventKind::Up(MouseButton::Left) => app.cancel_selection(),
                 _ => {}
             },
             Event::Key(k) => {
                 if k.kind != KeyEventKind::Press {
                     continue;
                 }
+                app.cancel_selection();
+                app.clear_status();
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                 match k.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
@@ -105,6 +169,7 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                     _ => {}
                 }
             }
+            Event::Resize(_, _) => app.cancel_selection(),
             _ => {}
         }
     }

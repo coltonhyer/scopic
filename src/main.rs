@@ -10,7 +10,7 @@ use ratatui::crossterm::{
     clipboard::CopyToClipboard,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseButton, MouseEventKind,
+        MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
 };
@@ -70,21 +70,45 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
         let mut child = Command::new("tmux")
             .args(["load-buffer", "-w", "-"])
             .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| std::io::Error::other("tmux stdin unavailable"))?;
-        stdin.write_all(text.as_bytes())?;
-        drop(stdin);
+        let write_result = match child.stdin.take() {
+            Some(mut stdin) => stdin.write_all(text.as_bytes()),
+            None => Err(std::io::Error::other("tmux stdin unavailable")),
+        };
         let status = child.wait()?;
-        return status
-            .success()
-            .then_some(())
-            .ok_or_else(|| std::io::Error::other(format!("tmux exited with {status}")));
+        if !status.success() {
+            return Err(std::io::Error::other(format!("tmux exited with {status}")));
+        }
+        write_result?;
+        return Ok(());
     }
 
     execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text))
+}
+
+fn handle_mouse_event(
+    app: &mut ui::App,
+    m: MouseEvent,
+    width: usize,
+    height: usize,
+) -> Option<String> {
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left) if !m.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.clear_status();
+            app.begin_selection(m.column as usize, m.row as usize, width, height);
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            app.drag_selection(m.column as usize, m.row as usize, width, height);
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            return app.finish_selection();
+        }
+        MouseEventKind::Down(MouseButton::Left) => app.cancel_selection(),
+        _ => {}
+    }
+    None
 }
 
 fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
@@ -97,47 +121,31 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
         app.scroll = app.scroll.min(max);
         term.draw(|f| ui::draw(f, app))?;
         match event::read()? {
-            Event::Mouse(m) => match m.kind {
-                MouseEventKind::Down(MouseButton::Left)
-                    if !m.modifiers.contains(KeyModifiers::SHIFT) =>
-                {
-                    app.clear_status();
-                    app.begin_selection(m.column as usize, m.row as usize, w, h);
-                }
-                MouseEventKind::Drag(MouseButton::Left)
-                    if !m.modifiers.contains(KeyModifiers::SHIFT) =>
-                {
-                    app.drag_selection(m.column as usize, m.row as usize, w, h);
-                }
-                MouseEventKind::Up(MouseButton::Left)
-                    if !m.modifiers.contains(KeyModifiers::SHIFT) =>
-                {
-                    if let Some(text) = app.finish_selection() {
-                        let lines = text.split('\n').count();
-                        match copy_to_clipboard(&text) {
-                            Ok(()) => app.set_status(format!(
-                                " copied {lines} {}",
-                                if lines == 1 { "line" } else { "lines" }
-                            )),
-                            Err(error) => app.set_error(format!(" copy failed: {error}")),
-                        }
+            Event::Mouse(m) => {
+                if let Some(text) = handle_mouse_event(app, m, w, h) {
+                    let lines = text.split('\n').count();
+                    match copy_to_clipboard(&text) {
+                        Ok(()) => app.set_status(format!(
+                            " copied {lines} {}",
+                            if lines == 1 { "line" } else { "lines" }
+                        )),
+                        Err(error) => app.set_error(format!(" copy failed: {error}")),
                     }
                 }
-                MouseEventKind::ScrollDown => {
-                    app.cancel_selection();
-                    app.clear_status();
-                    app.scroll = app.scroll.saturating_add(3);
+                match m.kind {
+                    MouseEventKind::ScrollDown => {
+                        app.cancel_selection();
+                        app.clear_status();
+                        app.scroll = app.scroll.saturating_add(3);
+                    }
+                    MouseEventKind::ScrollUp => {
+                        app.cancel_selection();
+                        app.clear_status();
+                        app.scroll = app.scroll.saturating_sub(3);
+                    }
+                    _ => {}
                 }
-                MouseEventKind::ScrollUp => {
-                    app.cancel_selection();
-                    app.clear_status();
-                    app.scroll = app.scroll.saturating_sub(3);
-                }
-                MouseEventKind::Down(MouseButton::Left)
-                | MouseEventKind::Drag(MouseButton::Left)
-                | MouseEventKind::Up(MouseButton::Left) => app.cancel_selection(),
-                _ => {}
-            },
+            }
             Event::Key(k) => {
                 if k.kind != KeyEventKind::Press {
                     continue;
@@ -172,5 +180,63 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
             Event::Resize(_, _) => app.cancel_selection(),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_drag_survives_shift_on_drag_and_release() {
+        let mut app = ui::App::new(vec![diff::Row::Line {
+            left: Some(diff::Cell {
+                no: 1,
+                text: "abc".into(),
+                kind: diff::Kind::Ctx,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        let event = |kind, column, modifiers| MouseEvent {
+            kind,
+            column,
+            row: 0,
+            modifiers,
+        };
+
+        handle_mouse_event(
+            &mut app,
+            event(
+                MouseEventKind::Down(MouseButton::Left),
+                5,
+                KeyModifiers::NONE,
+            ),
+            40,
+            2,
+        );
+        handle_mouse_event(
+            &mut app,
+            event(
+                MouseEventKind::Drag(MouseButton::Left),
+                6,
+                KeyModifiers::SHIFT,
+            ),
+            40,
+            2,
+        );
+        assert_eq!(
+            handle_mouse_event(
+                &mut app,
+                event(
+                    MouseEventKind::Up(MouseButton::Left),
+                    6,
+                    KeyModifiers::SHIFT
+                ),
+                40,
+                2,
+            ),
+            Some("ab".into())
+        );
     }
 }

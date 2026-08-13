@@ -119,7 +119,7 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                                 " copied {lines} {}",
                                 if lines == 1 { "line" } else { "lines" }
                             )),
-                            Err(error) => app.set_status(format!(" copy failed: {error}")),
+                            Err(error) => app.set_error(format!(" copy failed: {error}")),
                         }
                     }
                 }

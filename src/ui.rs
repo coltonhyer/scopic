@@ -71,7 +71,7 @@ pub struct App {
     /// File header row index → (added, deleted) line counts for its section
     stats: HashMap<usize, (u32, u32)>,
     selection: Option<Selection>,
-    status: Option<String>,
+    status: Option<(String, Style)>,
 }
 
 impl App {
@@ -143,7 +143,16 @@ impl App {
     }
 
     pub fn set_status(&mut self, status: String) {
-        self.status = Some(status);
+        self.status = Some((
+            status,
+            Style::default()
+                .fg(Color::Rgb(88, 166, 255))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    pub fn set_error(&mut self, status: String) {
+        self.status = Some((status, Style::default().fg(Color::Rgb(248, 81, 73))));
     }
 
     pub fn clear_status(&mut self) {
@@ -238,8 +247,15 @@ pub fn draw(f: &mut Frame, app: &App) {
         width: area.width,
         height: 1,
     };
-    let footer_text = app.status.as_deref().unwrap_or(FOOTER);
-    f.render_widget(Paragraph::new(Line::styled(footer_text, dim())), footer);
+    let (footer_text, footer_style) = app
+        .status
+        .as_ref()
+        .map(|(text, style)| (text.as_str(), *style))
+        .unwrap_or((FOOTER, dim()));
+    f.render_widget(
+        Paragraph::new(Line::styled(footer_text, footer_style)),
+        footer,
+    );
 }
 
 fn render_rows(
@@ -670,10 +686,30 @@ diff --git a/f.rs b/f.rs
     }
 
     #[test]
-    fn status_replaces_footer() {
+    fn success_status_replaces_footer_in_accent_blue() {
         let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
         app.set_status(" copied 2 lines".into());
         assert_eq!(render(40, 8, &app)[7], " copied 2 lines");
+
+        let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let style = term.backend().buffer()[(1u16, 7u16)].style();
+        assert_eq!(style.fg, Some(Color::Rgb(88, 166, 255)));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn error_status_replaces_footer_in_bright_red() {
+        let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        app.set_error(" copy failed: tmux exited".into());
+        assert_eq!(render(40, 8, &app)[7], " copy failed: tmux exited");
+
+        let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        assert_eq!(
+            term.backend().buffer()[(1u16, 7u16)].style().fg,
+            Some(Color::Rgb(248, 81, 73))
+        );
     }
 
     #[test]

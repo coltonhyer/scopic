@@ -33,6 +33,25 @@ struct Selection {
     dragged: bool,
 }
 
+impl Selection {
+    fn range_for(self, pane: Pane, row: usize, len: usize) -> Option<Range<usize>> {
+        if pane != self.pane {
+            return None;
+        }
+        let (start, end) = if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        };
+        if row < start.row || row > end.row {
+            return None;
+        }
+        let from = if row == start.row { start.start } else { 0 };
+        let to = if row == end.row { end.end } else { len };
+        (from <= to).then_some(from..to)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct VisualGlyph {
     columns: Range<usize>,
@@ -52,6 +71,7 @@ pub struct App {
     /// File header row index → (added, deleted) line counts for its section
     stats: HashMap<usize, (u32, u32)>,
     selection: Option<Selection>,
+    status: Option<String>,
 }
 
 impl App {
@@ -92,6 +112,7 @@ impl App {
             gutter_w: digits + 1,
             stats,
             selection: None,
+            status: None,
         }
     }
 
@@ -119,6 +140,14 @@ impl App {
         } else {
             (0..self.scroll).rev().find(is_file)
         }
+    }
+
+    pub fn set_status(&mut self, status: String) {
+        self.status = Some(status);
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status = None;
     }
 }
 
@@ -160,9 +189,9 @@ fn panes(w: usize) -> (usize, usize) {
 // ponytail: counts by building the spans; fine at diff sizes
 fn row_height(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> usize {
     match row {
-        Row::Line { left, right } => cell_segments(left.as_ref(), left_w, gutter_w)
+        Row::Line { left, right } => cell_segments(left.as_ref(), left_w, gutter_w, None)
             .len()
-            .max(cell_segments(right.as_ref(), right_w, gutter_w).len()),
+            .max(cell_segments(right.as_ref(), right_w, gutter_w, None).len()),
         _ => 1,
     }
 }
@@ -188,6 +217,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                 right_w,
                 app.gutter_w,
                 app.stats.get(&i).copied(),
+                app.selection,
+                i,
             )
         })
         .take(body_h as usize)
@@ -207,7 +238,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         width: area.width,
         height: 1,
     };
-    f.render_widget(Paragraph::new(Line::styled(FOOTER, dim())), footer);
+    let footer_text = app.status.as_deref().unwrap_or(FOOTER);
+    f.render_widget(Paragraph::new(Line::styled(footer_text, dim())), footer);
 }
 
 fn render_rows(
@@ -216,6 +248,8 @@ fn render_rows(
     right_w: usize,
     gutter_w: usize,
     stats: Option<(u32, u32)>,
+    selection: Option<Selection>,
+    row_index: usize,
 ) -> Vec<Line<'static>> {
     let w = left_w + 1 + right_w;
     match row {
@@ -249,8 +283,17 @@ fn render_rows(
         )],
         Row::Raw(r) => vec![Line::styled(r.clone(), dim())],
         Row::Line { left, right } => {
-            let ls = cell_segments(left.as_ref(), left_w, gutter_w);
-            let rs = cell_segments(right.as_ref(), right_w, gutter_w);
+            let selected_left = selection.and_then(|selection| {
+                left.as_ref()
+                    .and_then(|cell| selection.range_for(Pane::Left, row_index, cell.text.len()))
+            });
+            let selected_right = selection.and_then(|selection| {
+                right
+                    .as_ref()
+                    .and_then(|cell| selection.range_for(Pane::Right, row_index, cell.text.len()))
+            });
+            let ls = cell_segments(left.as_ref(), left_w, gutter_w, selected_left);
+            let rs = cell_segments(right.as_ref(), right_w, gutter_w, selected_right);
             (0..ls.len().max(rs.len()))
                 .map(|i| {
                     let mut spans = ls
@@ -281,7 +324,12 @@ fn dead_fill(width: usize) -> Vec<Span<'static>> {
 
 /// one pane of a row as visual lines, wrapped at the pane budget; the first
 /// segment carries the line number, continuations get a blank gutter
-fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<CellSegment> {
+fn cell_segments(
+    cell: Option<&Cell>,
+    width: usize,
+    gutter_w: usize,
+    selected: Option<Range<usize>>,
+) -> Vec<CellSegment> {
     let Some(c) = cell else {
         return vec![CellSegment {
             spans: dead_fill(width),
@@ -326,6 +374,7 @@ fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Cell
     let mut used = 0usize;
     let mut cur = String::new();
     let mut cur_emph = false;
+    let mut cur_selected = false;
     for (bidx, ch) in c.text.char_indices() {
         let cw = col(ch);
         if cw > budget {
@@ -335,9 +384,14 @@ fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Cell
         if used + cw > budget && used > 0 {
             // segment full: flush and start a continuation line
             if !cur.is_empty() {
+                let style = if cur_emph { emph } else { base };
                 spans.push(Span::styled(
                     std::mem::take(&mut cur),
-                    if cur_emph { emph } else { base },
+                    if cur_selected {
+                        style.add_modifier(Modifier::REVERSED)
+                    } else {
+                        style
+                    },
                 ));
             }
             if used < budget {
@@ -355,13 +409,20 @@ fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Cell
             .iter()
             .take_while(|&&(s, _)| s <= bidx)
             .any(|&(s, e)| bidx >= s && bidx < e);
-        if in_emph != cur_emph && !cur.is_empty() {
+        let in_selected = selected.as_ref().is_some_and(|range| range.contains(&bidx));
+        if (in_emph, in_selected) != (cur_emph, cur_selected) && !cur.is_empty() {
+            let style = if cur_emph { emph } else { base };
             spans.push(Span::styled(
                 std::mem::take(&mut cur),
-                if cur_emph { emph } else { base },
+                if cur_selected {
+                    style.add_modifier(Modifier::REVERSED)
+                } else {
+                    style
+                },
             ));
         }
         cur_emph = in_emph;
+        cur_selected = in_selected;
         glyphs.push(VisualGlyph {
             columns: gutter_w + used..gutter_w + used + cw,
             bytes: bidx..bidx + ch.len_utf8(),
@@ -374,7 +435,15 @@ fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Cell
         used += cw;
     }
     if !cur.is_empty() {
-        spans.push(Span::styled(cur, if cur_emph { emph } else { base }));
+        let style = if cur_emph { emph } else { base };
+        spans.push(Span::styled(
+            cur,
+            if cur_selected {
+                style.add_modifier(Modifier::REVERSED)
+            } else {
+                style
+            },
+        ));
     }
     if used < budget {
         spans.push(Span::styled(" ".repeat(budget - used), base));
@@ -427,7 +496,7 @@ impl App {
             }?,
             _ => return None,
         };
-        let segments = cell_segments(Some(cell), pane_w, self.gutter_w);
+        let segments = cell_segments(Some(cell), pane_w, self.gutter_w, None);
         let segment = segments.get(row_y)?;
         let (start, end) = segment
             .glyphs
@@ -576,6 +645,35 @@ diff --git a/f.rs b/f.rs
                 " j/k · ctrl-d/u · n/p · g/G · q".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn active_selection_is_highlighted() {
+        let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        app.begin_selection(25, 2, 40, 8);
+        app.drag_selection(27, 2, 40, 8);
+        let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let buf = term.backend().buffer();
+        assert!(
+            buf[(25u16, 2u16)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert!(
+            !buf[(20u16, 2u16)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+    }
+
+    #[test]
+    fn status_replaces_footer() {
+        let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        app.set_status(" copied 2 lines".into());
+        assert_eq!(render(40, 8, &app)[7], " copied 2 lines");
     }
 
     #[test]

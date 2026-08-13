@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Range;
 
 use ratatui::{
     Frame,
@@ -11,12 +12,46 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::diff::{Cell, Kind, Row};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Pane {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct Hit {
+    row: usize,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Selection {
+    pane: Pane,
+    anchor: Hit,
+    head: Hit,
+    dragged: bool,
+}
+
+#[derive(Clone, Debug)]
+struct VisualGlyph {
+    columns: Range<usize>,
+    bytes: Range<usize>,
+}
+
+#[derive(Clone)]
+struct CellSegment {
+    spans: Vec<Span<'static>>,
+    glyphs: Vec<VisualGlyph>,
+}
+
 pub struct App {
     pub rows: Vec<Row>,
     pub scroll: usize,
     gutter_w: usize,
     /// File header row index → (added, deleted) line counts for its section
     stats: HashMap<usize, (u32, u32)>,
+    selection: Option<Selection>,
 }
 
 impl App {
@@ -56,6 +91,7 @@ impl App {
             scroll: 0,
             gutter_w: digits + 1,
             stats,
+            selection: None,
         }
     }
 
@@ -217,9 +253,16 @@ fn render_rows(
             let rs = cell_segments(right.as_ref(), right_w, gutter_w);
             (0..ls.len().max(rs.len()))
                 .map(|i| {
-                    let mut spans = ls.get(i).cloned().unwrap_or_else(|| dead_fill(left_w));
+                    let mut spans = ls
+                        .get(i)
+                        .map(|segment| segment.spans.clone())
+                        .unwrap_or_else(|| dead_fill(left_w));
                     spans.push(Span::styled("│", dim()));
-                    spans.extend(rs.get(i).cloned().unwrap_or_else(|| dead_fill(right_w)));
+                    spans.extend(
+                        rs.get(i)
+                            .map(|segment| segment.spans.clone())
+                            .unwrap_or_else(|| dead_fill(right_w)),
+                    );
                     Line::from(spans)
                 })
                 .collect()
@@ -238,9 +281,12 @@ fn dead_fill(width: usize) -> Vec<Span<'static>> {
 
 /// one pane of a row as visual lines, wrapped at the pane budget; the first
 /// segment carries the line number, continuations get a blank gutter
-fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Vec<Span<'static>>> {
+fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<CellSegment> {
     let Some(c) = cell else {
-        return vec![dead_fill(width)];
+        return vec![CellSegment {
+            spans: dead_fill(width),
+            glyphs: vec![],
+        }];
     };
     let base = base_style(c.kind);
     let emph = emph_style(c.kind);
@@ -271,11 +317,12 @@ fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Vec<
         .sum();
     let indent = if indent + 4 <= budget { indent } else { 0 };
 
-    let mut segs: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut segs = Vec::new();
     let mut spans: Vec<Span<'static>> = vec![Span::styled(
         g.chars().take(gutter_w).collect::<String>(),
         gutter_style,
     )];
+    let mut glyphs = Vec::new();
     let mut used = 0usize;
     let mut cur = String::new();
     let mut cur_emph = false;
@@ -296,7 +343,10 @@ fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Vec<
             if used < budget {
                 spans.push(Span::styled(" ".repeat(budget - used), base));
             }
-            segs.push(std::mem::take(&mut spans));
+            segs.push(CellSegment {
+                spans: std::mem::take(&mut spans),
+                glyphs: std::mem::take(&mut glyphs),
+            });
             spans.push(Span::styled(" ".repeat(gutter_w + indent), gutter_style));
             used = indent;
         }
@@ -312,6 +362,10 @@ fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Vec<
             ));
         }
         cur_emph = in_emph;
+        glyphs.push(VisualGlyph {
+            columns: gutter_w + used..gutter_w + used + cw,
+            bytes: bidx..bidx + ch.len_utf8(),
+        });
         if ch == '\t' {
             cur.push_str("    ");
         } else {
@@ -325,8 +379,154 @@ fn cell_segments(cell: Option<&Cell>, width: usize, gutter_w: usize) -> Vec<Vec<
     if used < budget {
         spans.push(Span::styled(" ".repeat(budget - used), base));
     }
-    segs.push(spans);
+    segs.push(CellSegment { spans, glyphs });
     segs
+}
+
+fn first_char(text: &str) -> (usize, usize) {
+    text.char_indices()
+        .next()
+        .map(|(start, ch)| (start, start + ch.len_utf8()))
+        .unwrap_or((0, 0))
+}
+
+fn last_char(text: &str) -> (usize, usize) {
+    text.char_indices()
+        .last()
+        .map(|(start, ch)| (start, start + ch.len_utf8()))
+        .unwrap_or((0, 0))
+}
+
+impl App {
+    fn hit_test(&self, pane: Pane, x: usize, y: usize, width: usize, height: usize) -> Option<Hit> {
+        if y >= height.saturating_sub(1) {
+            return None;
+        }
+        let (left_w, right_w) = panes(width);
+        let (pane_w, local_x) = match pane {
+            Pane::Left if left_w > 0 => (left_w, x.min(left_w - 1)),
+            Pane::Right if right_w > 0 => (right_w, x.saturating_sub(left_w + 1).min(right_w - 1)),
+            _ => return None,
+        };
+
+        let mut row_y = y;
+        let mut selected = None;
+        for row_index in self.scroll..self.rows.len() {
+            let row_h = row_height(&self.rows[row_index], left_w, right_w, self.gutter_w);
+            if row_y < row_h {
+                selected = Some((row_index, row_y));
+                break;
+            }
+            row_y -= row_h;
+        }
+        let (row_index, row_y) = selected?;
+        let cell = match &self.rows[row_index] {
+            Row::Line { left, right } => match pane {
+                Pane::Left => left.as_ref(),
+                Pane::Right => right.as_ref(),
+            }?,
+            _ => return None,
+        };
+        let segments = cell_segments(Some(cell), pane_w, self.gutter_w);
+        let segment = segments.get(row_y)?;
+        let (start, end) = segment
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.columns.contains(&local_x))
+            .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
+            .or_else(|| {
+                if local_x < self.gutter_w.min(pane_w) {
+                    Some(first_char(&cell.text))
+                } else {
+                    segment
+                        .glyphs
+                        .first()
+                        .filter(|glyph| local_x < glyph.columns.start)
+                        .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
+                        .or_else(|| Some(last_char(&cell.text)))
+                }
+            })?;
+        Some(Hit {
+            row: row_index,
+            start,
+            end,
+        })
+    }
+
+    fn selection_text(&self, selection: Selection) -> String {
+        let (start, end) = if selection.anchor <= selection.head {
+            (selection.anchor, selection.head)
+        } else {
+            (selection.head, selection.anchor)
+        };
+        let mut parts = Vec::new();
+        for row_index in start.row..=end.row {
+            let Some(cell) = (match &self.rows[row_index] {
+                Row::Line { left, right } => match selection.pane {
+                    Pane::Left => left.as_ref(),
+                    Pane::Right => right.as_ref(),
+                },
+                _ => None,
+            }) else {
+                continue;
+            };
+            let text = if start.row == end.row {
+                &cell.text[start.start..end.end]
+            } else if row_index == start.row {
+                &cell.text[start.start..]
+            } else if row_index == end.row {
+                &cell.text[..end.end]
+            } else {
+                &cell.text
+            };
+            parts.push(text);
+        }
+        parts.join("\n")
+    }
+
+    pub fn begin_selection(&mut self, x: usize, y: usize, width: usize, height: usize) {
+        let (left_w, _) = panes(width);
+        let pane = if x < left_w {
+            Pane::Left
+        } else if x > left_w {
+            Pane::Right
+        } else {
+            self.selection = None;
+            return;
+        };
+        self.selection = self
+            .hit_test(pane, x, y, width, height)
+            .map(|hit| Selection {
+                pane,
+                anchor: hit,
+                head: hit,
+                dragged: false,
+            });
+    }
+
+    pub fn drag_selection(&mut self, x: usize, y: usize, width: usize, height: usize) {
+        let Some(mut selection) = self.selection else {
+            return;
+        };
+        if let Some(hit) = self.hit_test(selection.pane, x, y, width, height) {
+            selection.head = hit;
+            selection.dragged = true;
+            self.selection = Some(selection);
+        }
+    }
+
+    pub fn cancel_selection(&mut self) {
+        self.selection = None;
+    }
+
+    pub fn finish_selection(&mut self) -> Option<String> {
+        let selection = self.selection.take()?;
+        if !selection.dragged {
+            return None;
+        }
+        let text = self.selection_text(selection);
+        (!text.is_empty()).then_some(text)
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +576,169 @@ diff --git a/f.rs b/f.rs
                 " j/k · ctrl-d/u · n/p · g/G · q".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn selects_right_pane_text_only() {
+        let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        // At 40 columns the divider is x=19 and right-pane text starts at x=25.
+        app.begin_selection(25, 2, 40, 8);
+        app.drag_selection(32, 3, 40, 8);
+        assert_eq!(app.finish_selection().as_deref(), Some("ctx\nnew line"));
+    }
+
+    #[test]
+    fn reverse_drag_matches_forward_drag() {
+        let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        app.begin_selection(32, 3, 40, 8);
+        app.drag_selection(25, 2, 40, 8);
+        assert_eq!(app.finish_selection().as_deref(), Some("ctx\nnew line"));
+    }
+
+    #[test]
+    fn partial_endpoints_include_both_characters() {
+        let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        app.begin_selection(26, 2, 40, 8);
+        app.drag_selection(27, 3, 40, 8);
+        assert_eq!(app.finish_selection().as_deref(), Some("tx\nnew"));
+    }
+
+    #[test]
+    fn wrapped_selection_copies_original_line() {
+        let text = "a very long line that cannot fit in the pane";
+        let mut app = App::new(vec![Row::Line {
+            left: Some(Cell {
+                no: 1,
+                text: text.into(),
+                kind: Kind::Del,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        app.begin_selection(0, 0, 40, 5);
+        app.drag_selection(18, 3, 40, 5);
+        assert_eq!(app.finish_selection().as_deref(), Some(text));
+    }
+
+    #[test]
+    fn selection_preserves_tab_and_unicode() {
+        let mut app = App::new(vec![Row::Line {
+            left: Some(Cell {
+                no: 1,
+                text: "\té".into(),
+                kind: Kind::Ctx,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        app.begin_selection(5, 0, 40, 2);
+        app.drag_selection(9, 0, 40, 2);
+        assert_eq!(app.finish_selection().as_deref(), Some("\té"));
+    }
+
+    #[test]
+    fn selection_skips_metadata_rows() {
+        let cell = |no: u32, text: &str| {
+            Some(Cell {
+                no,
+                text: text.into(),
+                kind: Kind::Ctx,
+                emph: vec![],
+            })
+        };
+        let mut app = App::new(vec![
+            Row::Line {
+                left: cell(1, "one"),
+                right: None,
+            },
+            Row::Hunk("@@ -1 +1 @@".into()),
+            Row::Raw("metadata".into()),
+            Row::Line {
+                left: cell(2, "two"),
+                right: None,
+            },
+        ]);
+        app.begin_selection(5, 0, 40, 5);
+        app.drag_selection(7, 3, 40, 5);
+        assert_eq!(app.finish_selection().as_deref(), Some("one\ntwo"));
+    }
+
+    #[test]
+    fn selection_skips_absent_side_rows() {
+        let cell = |no: u32, text: &str| {
+            Some(Cell {
+                no,
+                text: text.into(),
+                kind: Kind::Ctx,
+                emph: vec![],
+            })
+        };
+        let mut app = App::new(vec![
+            Row::Line {
+                left: cell(1, "one"),
+                right: None,
+            },
+            Row::Line {
+                left: None,
+                right: cell(1, "right only"),
+            },
+            Row::Line {
+                left: cell(2, "two"),
+                right: None,
+            },
+        ]);
+        app.begin_selection(5, 0, 40, 4);
+        app.drag_selection(7, 2, 40, 4);
+        assert_eq!(app.finish_selection().as_deref(), Some("one\ntwo"));
+    }
+
+    #[test]
+    fn crossing_divider_stays_in_starting_pane() {
+        let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        app.begin_selection(25, 2, 40, 8);
+        app.drag_selection(0, 3, 40, 8);
+        assert_eq!(app.finish_selection().as_deref(), Some("ctx\nn"));
+    }
+
+    #[test]
+    fn dead_cell_and_footer_do_not_start_selection() {
+        let mut app = App::new(vec![Row::Line {
+            left: Some(Cell {
+                no: 1,
+                text: "left".into(),
+                kind: Kind::Del,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        app.begin_selection(25, 0, 40, 2);
+        app.drag_selection(30, 0, 40, 2);
+        assert_eq!(app.finish_selection(), None);
+        app.begin_selection(5, 1, 40, 2);
+        app.drag_selection(8, 1, 40, 2);
+        assert_eq!(app.finish_selection(), None);
+        app.begin_selection(19, 0, 40, 2);
+        app.drag_selection(18, 0, 40, 2);
+        assert_eq!(app.finish_selection(), None);
+    }
+
+    #[test]
+    fn metadata_does_not_start_selection() {
+        let mut app = App::new(vec![
+            Row::Hunk("@@ -1 +1 @@".into()),
+            Row::Line {
+                left: Some(Cell {
+                    no: 1,
+                    text: "left".into(),
+                    kind: Kind::Ctx,
+                    emph: vec![],
+                }),
+                right: None,
+            },
+        ]);
+        app.begin_selection(5, 0, 40, 3);
+        app.drag_selection(8, 1, 40, 3);
+        assert_eq!(app.finish_selection(), None);
     }
 
     #[test]

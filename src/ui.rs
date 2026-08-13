@@ -439,10 +439,16 @@ fn cell_segments(
         }
         cur_emph = in_emph;
         cur_selected = in_selected;
-        glyphs.push(VisualGlyph {
-            columns: gutter_w + used..gutter_w + used + cw,
-            bytes: bidx..bidx + ch.len_utf8(),
-        });
+        if cw == 0 {
+            if let Some(glyph) = glyphs.last_mut() {
+                glyph.bytes.end = bidx + ch.len_utf8();
+            }
+        } else {
+            glyphs.push(VisualGlyph {
+                columns: gutter_w + used..gutter_w + used + cw,
+                bytes: bidx..bidx + ch.len_utf8(),
+            });
+        }
         if ch == '\t' {
             cur.push_str("    ");
         } else {
@@ -466,20 +472,6 @@ fn cell_segments(
     }
     segs.push(CellSegment { spans, glyphs });
     segs
-}
-
-fn first_char(text: &str) -> (usize, usize) {
-    text.char_indices()
-        .next()
-        .map(|(start, ch)| (start, start + ch.len_utf8()))
-        .unwrap_or((0, 0))
-}
-
-fn last_char(text: &str) -> (usize, usize) {
-    text.char_indices()
-        .last()
-        .map(|(start, ch)| (start, start + ch.len_utf8()))
-        .unwrap_or((0, 0))
 }
 
 impl App {
@@ -521,14 +513,22 @@ impl App {
             .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
             .or_else(|| {
                 if local_x < self.gutter_w.min(pane_w) {
-                    Some(first_char(&cell.text))
+                    segment
+                        .glyphs
+                        .first()
+                        .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
                 } else {
                     segment
                         .glyphs
                         .first()
                         .filter(|glyph| local_x < glyph.columns.start)
                         .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
-                        .or_else(|| Some(last_char(&cell.text)))
+                        .or_else(|| {
+                            segment
+                                .glyphs
+                                .last()
+                                .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
+                        })
                 }
             })?;
         Some(Hit {
@@ -539,12 +539,12 @@ impl App {
     }
 
     fn selection_text(&self, selection: Selection) -> String {
+        let mut parts = Vec::new();
         let (start, end) = if selection.anchor <= selection.head {
             (selection.anchor, selection.head)
         } else {
             (selection.head, selection.anchor)
         };
-        let mut parts = Vec::new();
         for row_index in start.row..=end.row {
             let Some(cell) = (match &self.rows[row_index] {
                 Row::Line { left, right } => match selection.pane {
@@ -555,16 +555,9 @@ impl App {
             }) else {
                 continue;
             };
-            let text = if start.row == end.row {
-                &cell.text[start.start..end.end]
-            } else if row_index == start.row {
-                &cell.text[start.start..]
-            } else if row_index == end.row {
-                &cell.text[..end.end]
-            } else {
-                &cell.text
-            };
-            parts.push(text);
+            if let Some(range) = selection.range_for(selection.pane, row_index, cell.text.len()) {
+                parts.push(&cell.text[range]);
+            }
         }
         parts.join("\n")
     }
@@ -594,8 +587,8 @@ impl App {
             return;
         };
         if let Some(hit) = self.hit_test(selection.pane, x, y, width, height) {
+            selection.dragged = hit != selection.anchor;
             selection.head = hit;
-            selection.dragged = true;
             self.selection = Some(selection);
         }
     }
@@ -719,6 +712,72 @@ diff --git a/f.rs b/f.rs
         app.begin_selection(25, 2, 40, 8);
         app.drag_selection(32, 3, 40, 8);
         assert_eq!(app.finish_selection().as_deref(), Some("ctx\nnew line"));
+    }
+
+    #[test]
+    fn same_cell_drag_does_not_copy() {
+        let mut app = App::new(crate::diff::parse(SMALL.as_bytes()));
+        app.begin_selection(25, 2, 40, 8);
+        app.drag_selection(25, 2, 40, 8);
+        assert_eq!(app.finish_selection(), None);
+    }
+
+    #[test]
+    fn selection_includes_combining_marks() {
+        let mut app = App::new(vec![Row::Line {
+            left: Some(Cell {
+                no: 1,
+                text: "x a\u{301}".into(),
+                kind: Kind::Ctx,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        app.begin_selection(5, 0, 40, 2);
+        app.drag_selection(7, 0, 40, 2);
+        assert_eq!(app.finish_selection().as_deref(), Some("x a\u{301}"));
+    }
+
+    #[test]
+    fn continuation_gutter_hits_current_segment_start() {
+        let app = App::new(vec![Row::Line {
+            left: Some(Cell {
+                no: 1,
+                text: "abcdefghijklmnop".into(),
+                kind: Kind::Ctx,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        assert_eq!(
+            app.hit_test(Pane::Left, 0, 1, 40, 3),
+            Some(Hit {
+                row: 0,
+                start: 14,
+                end: 15,
+            })
+        );
+    }
+
+    #[test]
+    fn wrapped_segment_padding_hits_current_segment_end() {
+        let app = App::new(vec![Row::Line {
+            left: Some(Cell {
+                no: 1,
+                text: "abcdefghijklm界x".into(),
+                kind: Kind::Ctx,
+                emph: vec![],
+            }),
+            right: None,
+        }]);
+        assert_eq!(
+            app.hit_test(Pane::Left, 18, 0, 40, 3),
+            Some(Hit {
+                row: 0,
+                start: 12,
+                end: 13,
+            })
+        );
     }
 
     #[test]

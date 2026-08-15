@@ -52,13 +52,11 @@ impl Selection {
     }
 }
 
-#[derive(Clone, Debug)]
 struct VisualGlyph {
     columns: Range<usize>,
     bytes: Range<usize>,
 }
 
-#[derive(Clone)]
 struct CellSegment {
     spans: Vec<Span<'static>>,
     glyphs: Vec<VisualGlyph>,
@@ -391,6 +389,20 @@ fn cell_segments(
     let mut cur = String::new();
     let mut cur_emph = false;
     let mut cur_selected = false;
+    let flush =
+        |spans: &mut Vec<Span<'static>>, cur: &mut String, cur_emph: bool, cur_selected: bool| {
+            if !cur.is_empty() {
+                let style = if cur_emph { emph } else { base };
+                spans.push(Span::styled(
+                    std::mem::take(cur),
+                    if cur_selected {
+                        style.add_modifier(Modifier::REVERSED)
+                    } else {
+                        style
+                    },
+                ));
+            }
+        };
     for (bidx, ch) in c.text.char_indices() {
         let cw = col(ch);
         if cw > budget {
@@ -399,17 +411,7 @@ fn cell_segments(
         }
         if used + cw > budget && used > 0 {
             // segment full: flush and start a continuation line
-            if !cur.is_empty() {
-                let style = if cur_emph { emph } else { base };
-                spans.push(Span::styled(
-                    std::mem::take(&mut cur),
-                    if cur_selected {
-                        style.add_modifier(Modifier::REVERSED)
-                    } else {
-                        style
-                    },
-                ));
-            }
+            flush(&mut spans, &mut cur, cur_emph, cur_selected);
             if used < budget {
                 spans.push(Span::styled(" ".repeat(budget - used), base));
             }
@@ -427,15 +429,7 @@ fn cell_segments(
             .any(|&(s, e)| bidx >= s && bidx < e);
         let in_selected = selected.as_ref().is_some_and(|range| range.contains(&bidx));
         if (in_emph, in_selected) != (cur_emph, cur_selected) && !cur.is_empty() {
-            let style = if cur_emph { emph } else { base };
-            spans.push(Span::styled(
-                std::mem::take(&mut cur),
-                if cur_selected {
-                    style.add_modifier(Modifier::REVERSED)
-                } else {
-                    style
-                },
-            ));
+            flush(&mut spans, &mut cur, cur_emph, cur_selected);
         }
         cur_emph = in_emph;
         cur_selected = in_selected;
@@ -456,17 +450,7 @@ fn cell_segments(
         }
         used += cw;
     }
-    if !cur.is_empty() {
-        let style = if cur_emph { emph } else { base };
-        spans.push(Span::styled(
-            cur,
-            if cur_selected {
-                style.add_modifier(Modifier::REVERSED)
-            } else {
-                style
-            },
-        ));
-    }
+    flush(&mut spans, &mut cur, cur_emph, cur_selected);
     if used < budget {
         spans.push(Span::styled(" ".repeat(budget - used), base));
     }
@@ -506,46 +490,29 @@ impl App {
         };
         let segments = cell_segments(Some(cell), pane_w, self.gutter_w, None);
         let segment = segments.get(row_y)?;
-        let (start, end) = segment
+        let glyph = segment
             .glyphs
             .iter()
             .find(|glyph| glyph.columns.contains(&local_x))
-            .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
             .or_else(|| {
-                if local_x < self.gutter_w.min(pane_w) {
-                    segment
-                        .glyphs
-                        .first()
-                        .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
-                } else {
-                    segment
-                        .glyphs
-                        .first()
-                        .filter(|glyph| local_x < glyph.columns.start)
-                        .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
-                        .or_else(|| {
-                            segment
-                                .glyphs
-                                .last()
-                                .map(|glyph| (glyph.bytes.start, glyph.bytes.end))
-                        })
-                }
-            })?;
+                segment
+                    .glyphs
+                    .first()
+                    .filter(|glyph| local_x < glyph.columns.start)
+            })
+            .or_else(|| segment.glyphs.last())?;
         Some(Hit {
             row: row_index,
-            start,
-            end,
+            start: glyph.bytes.start,
+            end: glyph.bytes.end,
         })
     }
 
     fn selection_text(&self, selection: Selection) -> String {
         let mut parts = Vec::new();
-        let (start, end) = if selection.anchor <= selection.head {
-            (selection.anchor, selection.head)
-        } else {
-            (selection.head, selection.anchor)
-        };
-        for row_index in start.row..=end.row {
+        for row_index in selection.anchor.row.min(selection.head.row)
+            ..=selection.anchor.row.max(selection.head.row)
+        {
             let Some(cell) = (match &self.rows[row_index] {
                 Row::Line { left, right } => match selection.pane {
                     Pane::Left => left.as_ref(),
@@ -621,6 +588,15 @@ diff --git a/f.rs b/f.rs
 -old line
 +new line
 ";
+
+    fn cell(no: u32, text: &str, kind: Kind) -> Option<Cell> {
+        Some(Cell {
+            no,
+            text: text.into(),
+            kind,
+            emph: vec![],
+        })
+    }
 
     fn render(width: u16, height: u16, app: &App) -> Vec<String> {
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -725,12 +701,7 @@ diff --git a/f.rs b/f.rs
     #[test]
     fn selection_includes_combining_marks() {
         let mut app = App::new(vec![Row::Line {
-            left: Some(Cell {
-                no: 1,
-                text: "x a\u{301}".into(),
-                kind: Kind::Ctx,
-                emph: vec![],
-            }),
+            left: cell(1, "x a\u{301}", Kind::Ctx),
             right: None,
         }]);
         app.begin_selection(5, 0, 40, 2);
@@ -741,12 +712,7 @@ diff --git a/f.rs b/f.rs
     #[test]
     fn continuation_gutter_hits_current_segment_start() {
         let app = App::new(vec![Row::Line {
-            left: Some(Cell {
-                no: 1,
-                text: "abcdefghijklmnop".into(),
-                kind: Kind::Ctx,
-                emph: vec![],
-            }),
+            left: cell(1, "abcdefghijklmnop", Kind::Ctx),
             right: None,
         }]);
         assert_eq!(
@@ -762,12 +728,7 @@ diff --git a/f.rs b/f.rs
     #[test]
     fn wrapped_segment_padding_hits_current_segment_end() {
         let app = App::new(vec![Row::Line {
-            left: Some(Cell {
-                no: 1,
-                text: "abcdefghijklm界x".into(),
-                kind: Kind::Ctx,
-                emph: vec![],
-            }),
+            left: cell(1, "abcdefghijklm界x", Kind::Ctx),
             right: None,
         }]);
         assert_eq!(
@@ -800,12 +761,7 @@ diff --git a/f.rs b/f.rs
     fn wrapped_selection_copies_original_line() {
         let text = "a very long line that cannot fit in the pane";
         let mut app = App::new(vec![Row::Line {
-            left: Some(Cell {
-                no: 1,
-                text: text.into(),
-                kind: Kind::Del,
-                emph: vec![],
-            }),
+            left: cell(1, text, Kind::Del),
             right: None,
         }]);
         app.begin_selection(0, 0, 40, 5);
@@ -816,12 +772,7 @@ diff --git a/f.rs b/f.rs
     #[test]
     fn selection_preserves_tab_and_unicode() {
         let mut app = App::new(vec![Row::Line {
-            left: Some(Cell {
-                no: 1,
-                text: "\té".into(),
-                kind: Kind::Ctx,
-                emph: vec![],
-            }),
+            left: cell(1, "\té", Kind::Ctx),
             right: None,
         }]);
         app.begin_selection(5, 0, 40, 2);
@@ -831,23 +782,15 @@ diff --git a/f.rs b/f.rs
 
     #[test]
     fn selection_skips_metadata_rows() {
-        let cell = |no: u32, text: &str| {
-            Some(Cell {
-                no,
-                text: text.into(),
-                kind: Kind::Ctx,
-                emph: vec![],
-            })
-        };
         let mut app = App::new(vec![
             Row::Line {
-                left: cell(1, "one"),
+                left: cell(1, "one", Kind::Ctx),
                 right: None,
             },
             Row::Hunk("@@ -1 +1 @@".into()),
             Row::Raw("metadata".into()),
             Row::Line {
-                left: cell(2, "two"),
+                left: cell(2, "two", Kind::Ctx),
                 right: None,
             },
         ]);
@@ -858,25 +801,17 @@ diff --git a/f.rs b/f.rs
 
     #[test]
     fn selection_skips_absent_side_rows() {
-        let cell = |no: u32, text: &str| {
-            Some(Cell {
-                no,
-                text: text.into(),
-                kind: Kind::Ctx,
-                emph: vec![],
-            })
-        };
         let mut app = App::new(vec![
             Row::Line {
-                left: cell(1, "one"),
+                left: cell(1, "one", Kind::Ctx),
                 right: None,
             },
             Row::Line {
                 left: None,
-                right: cell(1, "right only"),
+                right: cell(1, "right only", Kind::Ctx),
             },
             Row::Line {
-                left: cell(2, "two"),
+                left: cell(2, "two", Kind::Ctx),
                 right: None,
             },
         ]);
@@ -896,12 +831,7 @@ diff --git a/f.rs b/f.rs
     #[test]
     fn dead_cell_and_footer_do_not_start_selection() {
         let mut app = App::new(vec![Row::Line {
-            left: Some(Cell {
-                no: 1,
-                text: "left".into(),
-                kind: Kind::Del,
-                emph: vec![],
-            }),
+            left: cell(1, "left", Kind::Del),
             right: None,
         }]);
         app.begin_selection(25, 0, 40, 2);
@@ -920,12 +850,7 @@ diff --git a/f.rs b/f.rs
         let mut app = App::new(vec![
             Row::Hunk("@@ -1 +1 @@".into()),
             Row::Line {
-                left: Some(Cell {
-                    no: 1,
-                    text: "left".into(),
-                    kind: Kind::Ctx,
-                    emph: vec![],
-                }),
+                left: cell(1, "left", Kind::Ctx),
                 right: None,
             },
         ]);

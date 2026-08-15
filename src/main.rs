@@ -123,7 +123,9 @@ fn handle_mouse_event(
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) if !m.modifiers.contains(KeyModifiers::SHIFT) => {
             app.clear_status();
-            if !app.begin_resize(m.column as usize, m.row as usize, width, height) {
+            if !app.toggle_file_at(m.row as usize, width, height)
+                && !app.begin_resize(m.column as usize, m.row as usize, width, height)
+            {
                 app.begin_selection(m.column as usize, m.row as usize, width, height);
             }
         }
@@ -168,12 +170,12 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                     MouseEventKind::ScrollDown => {
                         app.cancel_interaction();
                         app.clear_status();
-                        app.scroll = app.scroll.saturating_add(3);
+                        app.scroll_down(3, max);
                     }
                     MouseEventKind::ScrollUp => {
                         app.cancel_interaction();
                         app.clear_status();
-                        app.scroll = app.scroll.saturating_sub(3);
+                        app.scroll_up(3);
                     }
                     _ => {}
                 }
@@ -188,12 +190,15 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                 match k.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('c') if ctrl => return Ok(()),
-                    KeyCode::Char('j') | KeyCode::Down => app.scroll = (app.scroll + 1).min(max),
-                    KeyCode::Char('k') | KeyCode::Up => app.scroll = app.scroll.saturating_sub(1),
-                    KeyCode::Char('d') if ctrl => app.scroll = (app.scroll + half).min(max),
-                    KeyCode::Char('u') if ctrl => app.scroll = app.scroll.saturating_sub(half),
-                    KeyCode::PageDown => app.scroll = (app.scroll + half).min(max),
-                    KeyCode::PageUp => app.scroll = app.scroll.saturating_sub(half),
+                    KeyCode::Char('j') | KeyCode::Down => app.scroll_down(1, max),
+                    KeyCode::Char('k') | KeyCode::Up => app.scroll_up(1),
+                    KeyCode::Char('d') if ctrl => app.scroll_down(half, max),
+                    KeyCode::Char('u') if ctrl => app.scroll_up(half),
+                    KeyCode::PageDown => app.scroll_down(half, max),
+                    KeyCode::PageUp => app.scroll_up(half),
+                    KeyCode::Char('c') => {
+                        app.toggle_current_file();
+                    }
                     KeyCode::Char('g') => app.scroll = 0,
                     KeyCode::Char('G') => app.scroll = max,
                     KeyCode::Char('=') => app.reset_panes(),
@@ -357,5 +362,51 @@ mod tests {
             None
         );
         assert!(!app.finish_resize());
+    }
+
+    fn collapsible_app() -> ui::App {
+        ui::App::new(vec![
+            diff::Row::File("a.rs".into()),
+            diff::Row::Line {
+                left: Some(diff::Cell {
+                    no: 1,
+                    text: "alpha".into(),
+                    kind: diff::Kind::Ctx,
+                    emph: vec![],
+                }),
+                right: None,
+            },
+        ])
+    }
+
+    #[test]
+    fn header_click_collapses_before_resize_or_selection() {
+        let mut app = collapsible_app();
+        let event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 20,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(app.max_scroll(41, 2), 1);
+
+        assert_eq!(handle_mouse_event(&mut app, event, 41, 2), None);
+        assert_eq!(app.max_scroll(41, 2), 0);
+        assert!(!app.finish_resize());
+        assert_eq!(app.finish_selection(), None);
+    }
+
+    #[test]
+    fn shift_click_on_header_keeps_native_selection_fallback() {
+        let mut app = collapsible_app();
+        let event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 20,
+            row: 0,
+            modifiers: KeyModifiers::SHIFT,
+        };
+
+        assert_eq!(handle_mouse_event(&mut app, event, 41, 2), None);
+        assert_eq!(app.max_scroll(41, 2), 1);
     }
 }

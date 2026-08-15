@@ -8,7 +8,8 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::Paragraph,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::diff::{Cell, Kind, Row};
 
@@ -281,10 +282,10 @@ fn render_rows(
                 ],
                 _ => vec![],
             };
-            let used = t.chars().count()
+            let used = t.width()
                 + counts
                     .iter()
-                    .map(|s| s.content.chars().count())
+                    .map(|s| s.content.as_ref().width())
                     .sum::<usize>();
             spans.push(Span::styled(" ".repeat(w.saturating_sub(used)), bar));
             spans.extend(counts);
@@ -358,13 +359,11 @@ fn cell_segments(
     let g = format!("{:>w$} ", c.no, w = gutter_w.saturating_sub(1));
 
     // tab = 4 cols
-    // ponytail: per-char widths; ZWJ emoji clusters (👩‍💻) over-count and wrap
-    // early on that row only — switch to grapheme segmentation if it ever matters
-    let col = |ch: char| {
-        if ch == '\t' {
+    let col = |grapheme: &str| {
+        if grapheme == "\t" {
             4
         } else {
-            ch.width().unwrap_or(0)
+            grapheme.width()
         }
     };
 
@@ -373,8 +372,8 @@ fn cell_segments(
     // overflow the pane and shift the divider
     let indent: usize = c
         .text
-        .chars()
-        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .graphemes(true)
+        .take_while(|grapheme| matches!(*grapheme, " " | "\t"))
         .map(col)
         .sum();
     let indent = if indent + 4 <= budget { indent } else { 0 };
@@ -403,10 +402,10 @@ fn cell_segments(
                 ));
             }
         };
-    for (bidx, ch) in c.text.char_indices() {
-        let cw = col(ch);
+    for (bidx, grapheme) in c.text.grapheme_indices(true) {
+        let cw = col(grapheme);
         if cw > budget {
-            // ponytail: char wider than the whole pane (tab in a sliver); drop it
+            // ponytail: grapheme wider than the whole pane (tab in a sliver); drop it
             continue;
         }
         if used + cw > budget && used > 0 {
@@ -435,18 +434,18 @@ fn cell_segments(
         cur_selected = in_selected;
         if cw == 0 {
             if let Some(glyph) = glyphs.last_mut() {
-                glyph.bytes.end = bidx + ch.len_utf8();
+                glyph.bytes.end = bidx + grapheme.len();
             }
         } else {
             glyphs.push(VisualGlyph {
                 columns: gutter_w + used..gutter_w + used + cw,
-                bytes: bidx..bidx + ch.len_utf8(),
+                bytes: bidx..bidx + grapheme.len(),
             });
         }
-        if ch == '\t' {
+        if grapheme == "\t" {
             cur.push_str("    ");
         } else {
-            cur.push(ch);
+            cur.push_str(grapheme);
         }
         used += cw;
     }
@@ -707,6 +706,46 @@ diff --git a/f.rs b/f.rs
         app.begin_selection(5, 0, 40, 2);
         app.drag_selection(7, 0, 40, 2);
         assert_eq!(app.finish_selection().as_deref(), Some("x a\u{301}"));
+    }
+
+    #[test]
+    fn selection_includes_entire_zwj_grapheme() {
+        let mut app = App::new(vec![Row::Line {
+            left: cell(1, "x👩‍💻y", Kind::Ctx),
+            right: None,
+        }]);
+        app.begin_selection(5, 0, 40, 2);
+        app.drag_selection(6, 0, 40, 2);
+        assert_eq!(app.finish_selection().as_deref(), Some("x👩‍💻"));
+    }
+
+    #[test]
+    fn trailing_zero_width_grapheme_hits_visible_glyph() {
+        let app = App::new(vec![Row::Line {
+            left: cell(1, "a\u{200b}", Kind::Ctx),
+            right: None,
+        }]);
+        assert_eq!(
+            app.hit_test(Pane::Left, 6, 0, 40, 2),
+            Some(Hit {
+                row: 0,
+                start: 0,
+                end: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn wide_header_keeps_counts_at_right_edge() {
+        let app = App::new(vec![
+            Row::File("界界界界.rs".into()),
+            Row::Line {
+                left: cell(1, "gone", Kind::Del),
+                right: cell(1, "new", Kind::Add),
+            },
+        ]);
+        let lines = render(20, 3, &app);
+        assert!(lines[0].ends_with("+1 -1"), "{:?}", lines[0]);
     }
 
     #[test]

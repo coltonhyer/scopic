@@ -1135,6 +1135,7 @@ dependencies = [
  "crossterm",
  "ratatui",
  "similar",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

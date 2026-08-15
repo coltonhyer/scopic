@@ -17,6 +17,28 @@ use ratatui::crossterm::{
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+fn key_event_is_actionable(kind: KeyEventKind) -> bool {
+    matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
+fn format_tmux_error(status: &str, stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr)
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|ch| !ch.is_control())
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if stderr.is_empty() {
+        format!("tmux exited with {status}")
+    } else {
+        stderr
+    }
+}
+
 const HELP: &str = "scopic — side-by-side diff viewer
 
 usage:
@@ -71,18 +93,22 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
             .args(["load-buffer", "-w", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
-        let write_result = match child.stdin.take() {
-            Some(mut stdin) => stdin.write_all(text.as_bytes()),
+        let mut stdin = child.stdin.take();
+        let write_result = match stdin.as_mut() {
+            Some(stdin) => stdin.write_all(text.as_bytes()),
             None => Err(std::io::Error::other("tmux stdin unavailable")),
         };
-        let status = child.wait()?;
-        if !status.success() {
-            return Err(std::io::Error::other(format!("tmux exited with {status}")));
+        drop(stdin);
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            return Err(std::io::Error::other(format_tmux_error(
+                &output.status.to_string(),
+                &output.stderr,
+            )));
         }
-        write_result?;
-        return Ok(());
+        return write_result;
     }
 
     execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text))
@@ -147,7 +173,7 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                 }
             }
             Event::Key(k) => {
-                if k.kind != KeyEventKind::Press {
+                if !key_event_is_actionable(k.kind) {
                     continue;
                 }
                 app.cancel_selection();
@@ -186,6 +212,37 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_repeats_are_processed_but_releases_are_ignored() {
+        assert!(key_event_is_actionable(KeyEventKind::Press));
+        assert!(key_event_is_actionable(KeyEventKind::Repeat));
+        assert!(!key_event_is_actionable(KeyEventKind::Release));
+    }
+
+    #[test]
+    fn tmux_error_prefers_trimmed_stderr() {
+        assert_eq!(
+            format_tmux_error("exit status: 1", b"\n tmux: denied \n"),
+            "tmux: denied"
+        );
+    }
+
+    #[test]
+    fn tmux_error_uses_status_when_stderr_is_blank() {
+        assert_eq!(
+            format_tmux_error("exit status: 1", b" \n\t"),
+            "tmux exited with exit status: 1"
+        );
+    }
+
+    #[test]
+    fn tmux_error_strips_terminal_controls() {
+        assert_eq!(
+            format_tmux_error("exit status: 1", b"\x1b[31mdenied\x07\0"),
+            "[31mdenied"
+        );
+    }
 
     #[test]
     fn owned_drag_survives_shift_on_drag_and_release() {

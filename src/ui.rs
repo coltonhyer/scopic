@@ -63,12 +63,20 @@ struct CellSegment {
     glyphs: Vec<VisualGlyph>,
 }
 
+#[derive(Debug)]
+struct FileSection {
+    header: usize,
+    body: Range<usize>,
+    collapsed: bool,
+}
+
 pub struct App {
     pub rows: Vec<Row>,
     pub scroll: usize,
     gutter_w: usize,
     /// File header row index → (added, deleted) line counts for its section
     stats: HashMap<usize, (u32, u32)>,
+    sections: Vec<FileSection>,
     pane_ratio: Option<(usize, usize)>,
     resizing_divider: bool,
     selection: Option<Selection>,
@@ -86,6 +94,19 @@ impl App {
             .max()
             .unwrap_or(0);
         let digits = (max_no.max(1).ilog10() as usize + 1).max(4);
+        let mut sections: Vec<FileSection> = Vec::new();
+        for (i, row) in rows.iter().enumerate() {
+            if matches!(row, Row::File(_)) {
+                if let Some(previous) = sections.last_mut() {
+                    previous.body.end = i;
+                }
+                sections.push(FileSection {
+                    header: i,
+                    body: i + 1..rows.len(),
+                    collapsed: false,
+                });
+            }
+        }
         let mut stats = HashMap::new();
         let mut cur = None;
         for (i, r) in rows.iter().enumerate() {
@@ -112,6 +133,7 @@ impl App {
             scroll: 0,
             gutter_w: digits + 1,
             stats,
+            sections,
             pane_ratio: None,
             resizing_divider: false,
             selection: None,
@@ -123,25 +145,32 @@ impl App {
     /// page may run short); needs the width to sum wrapped row heights
     pub fn max_scroll(&self, w: usize, viewport_h: usize) -> usize {
         let body_h = viewport_h.saturating_sub(1);
-        let (lw, rw) = self.pane_widths(w);
-        let mut h = 0usize;
-        for i in (0..self.rows.len()).rev() {
-            h += row_height(&self.rows[i], lw, rw, self.gutter_w);
-            if h > body_h {
-                // a tail row taller than the body must stay reachable, clipped
-                return (i + 1).min(self.rows.len() - 1);
+        let (left_w, right_w) = self.pane_widths(w);
+        let mut height = 0;
+        let mut next = self.visible_rows().next_back().unwrap_or(0);
+        for row in self.visible_rows().rev() {
+            height += row_height(&self.rows[row], left_w, right_w, self.gutter_w);
+            if height > body_h {
+                return next;
             }
+            next = row;
         }
         0
     }
 
     /// index of the next/prev `Row::File` relative to current scroll
     pub fn file_jump(&self, forward: bool) -> Option<usize> {
-        let is_file = |i: &usize| matches!(self.rows[*i], Row::File(_));
         if forward {
-            (self.scroll + 1..self.rows.len()).find(is_file)
+            self.sections
+                .iter()
+                .map(|section| section.header)
+                .find(|&header| header > self.scroll)
         } else {
-            (0..self.scroll).rev().find(is_file)
+            self.sections
+                .iter()
+                .map(|section| section.header)
+                .rev()
+                .find(|&header| header < self.scroll)
         }
     }
 
@@ -162,6 +191,36 @@ impl App {
         self.status = None;
     }
 
+    fn section_index_for_row(&self, row: usize) -> Option<usize> {
+        let index = self
+            .sections
+            .partition_point(|section| section.header <= row)
+            .checked_sub(1)?;
+        (row < self.sections[index].body.end).then_some(index)
+    }
+
+    fn row_visible(&self, row: usize) -> bool {
+        self.section_index_for_row(row).is_none_or(|index| {
+            let section = &self.sections[index];
+            row == section.header || !section.collapsed
+        })
+    }
+
+    fn header_collapsed(&self, row: usize) -> bool {
+        self.section_index_for_row(row).is_some_and(|index| {
+            let section = &self.sections[index];
+            section.header == row && section.collapsed
+        })
+    }
+
+    fn visible_rows(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        (0..self.rows.len()).filter(|&row| self.row_visible(row))
+    }
+
+    fn visible_rows_from(&self, start: usize) -> impl Iterator<Item = usize> + '_ {
+        (start..self.rows.len()).filter(|&row| self.row_visible(row))
+    }
+
     fn pane_widths(&self, width: usize) -> (usize, usize) {
         let available = width.saturating_sub(1);
         let min = (self.gutter_w + 1).min(available / 2);
@@ -171,6 +230,42 @@ impl App {
             .unwrap_or(available / 2);
         let left = preferred.clamp(min, available.saturating_sub(min));
         (left, available - left)
+    }
+}
+
+#[allow(dead_code)]
+impl App {
+    pub fn toggle_current_file(&mut self) -> bool {
+        let Some(index) = self.section_index_for_row(self.scroll) else {
+            return false;
+        };
+        self.cancel_interaction();
+        self.sections[index].collapsed = !self.sections[index].collapsed;
+        self.scroll = self.sections[index].header;
+        true
+    }
+
+    pub fn scroll_down(&mut self, count: usize, max: usize) {
+        for _ in 0..count {
+            let Some(next) = (self.scroll + 1..self.rows.len()).find(|&row| self.row_visible(row))
+            else {
+                break;
+            };
+            if next > max {
+                self.scroll = max;
+                break;
+            }
+            self.scroll = next;
+        }
+    }
+
+    pub fn scroll_up(&mut self, count: usize) {
+        for _ in 0..count {
+            let Some(previous) = (0..self.scroll).rev().find(|&row| self.row_visible(row)) else {
+                break;
+            };
+            self.scroll = previous;
+        }
     }
 }
 
@@ -263,11 +358,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     let (left_w, right_w) = app.pane_widths(w);
 
     let lines: Vec<Line> = app
-        .rows
-        .iter()
-        .enumerate()
-        .skip(app.scroll)
-        .flat_map(|(i, row)| {
+        .visible_rows_from(app.scroll)
+        .flat_map(|i| {
+            let row = &app.rows[i];
             render_rows(
                 row,
                 left_w,
@@ -276,6 +369,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 app.stats.get(&i).copied(),
                 app.selection,
                 i,
+                app.header_collapsed(i),
             )
         })
         .take(body_h as usize)
@@ -306,6 +400,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_rows(
     row: &Row,
     left_w: usize,
@@ -314,13 +409,16 @@ fn render_rows(
     stats: Option<(u32, u32)>,
     selection: Option<Selection>,
     row_index: usize,
+    collapsed: bool,
 ) -> Vec<Line<'static>> {
     let w = left_w + 1 + right_w;
     match row {
         Row::File(t) => {
             let bar = Style::default().bg(Color::Indexed(236));
             let split = t.rfind('/').map_or(0, |i| i + 1);
+            let marker = if collapsed { "▸ " } else { "▾ " };
             let mut spans = vec![
+                Span::styled(marker, bar.fg(Color::DarkGray)),
                 Span::styled(t[..split].to_string(), bar.fg(Color::DarkGray)),
                 Span::styled(t[split..].to_string(), bar.add_modifier(Modifier::BOLD)),
             ];
@@ -331,7 +429,8 @@ fn render_rows(
                 ],
                 _ => vec![],
             };
-            let used = t.width()
+            let used = marker.width()
+                + t.width()
                 + counts
                     .iter()
                     .map(|s| s.content.as_ref().width())
@@ -561,6 +660,9 @@ impl App {
         for row_index in selection.anchor.row.min(selection.head.row)
             ..=selection.anchor.row.max(selection.head.row)
         {
+            if !self.row_visible(row_index) {
+                continue;
+            }
             let Some(cell) = (match &self.rows[row_index] {
                 Row::Line { left, right } => match selection.pane {
                     Pane::Left => left.as_ref(),
@@ -658,6 +760,130 @@ diff --git a/f.rs b/f.rs
             .collect()
     }
 
+    fn section_rows() -> Vec<Row> {
+        vec![
+            Row::Raw("preamble".into()),
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "alpha", Kind::Ctx),
+                right: cell(1, "alpha", Kind::Ctx),
+            },
+            Row::File("empty.rs".into()),
+            Row::File("c.rs".into()),
+            Row::Line {
+                left: cell(1, "charlie", Kind::Ctx),
+                right: cell(1, "charlie", Kind::Ctx),
+            },
+        ]
+    }
+
+    #[test]
+    fn file_sections_include_empty_bodies_and_leave_preamble_unsectioned() {
+        let app = App::new(section_rows());
+
+        assert_eq!(
+            app.sections
+                .iter()
+                .map(|section| (section.header, section.body.clone(), section.collapsed))
+                .collect::<Vec<_>>(),
+            vec![(1, 2..3, false), (3, 4..4, false), (4, 5..6, false)]
+        );
+        assert_eq!(app.section_index_for_row(0), None);
+        assert_eq!(app.section_index_for_row(2), Some(0));
+        assert_eq!(app.section_index_for_row(3), Some(1));
+    }
+
+    #[test]
+    fn collapse_hides_only_the_current_file_body() {
+        let mut app = App::new(section_rows());
+        app.scroll = 2;
+
+        assert!(app.toggle_current_file());
+        assert_eq!(app.scroll, 1);
+        assert_eq!(app.visible_rows().collect::<Vec<_>>(), vec![0, 1, 3, 4, 5]);
+        let lines = render(41, 7, &app);
+        assert!(lines[0].starts_with("▸ a.rs"), "{lines:?}");
+        assert!(lines[1].starts_with("▾ empty.rs"), "{lines:?}");
+
+        assert!(app.toggle_current_file());
+        assert_eq!(
+            app.visible_rows().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn visible_scrolling_skips_collapsed_bodies() {
+        let mut app = App::new(section_rows());
+        app.scroll = 2;
+        assert!(app.toggle_current_file());
+
+        app.scroll_down(1, 5);
+        assert_eq!(app.scroll, 3);
+        app.scroll_down(1, 5);
+        assert_eq!(app.scroll, 4);
+        app.scroll_up(2);
+        assert_eq!(app.scroll, 1);
+    }
+
+    #[test]
+    fn copied_text_excludes_collapsed_file_bodies() {
+        let mut app = App::new(vec![
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "alpha", Kind::Ctx),
+                right: None,
+            },
+            Row::File("hidden.rs".into()),
+            Row::Line {
+                left: cell(1, "hidden", Kind::Ctx),
+                right: None,
+            },
+            Row::File("c.rs".into()),
+            Row::Line {
+                left: cell(1, "charlie", Kind::Ctx),
+                right: None,
+            },
+        ]);
+        app.scroll = 2;
+        assert!(app.toggle_current_file());
+        let selection = Selection {
+            pane: Pane::Left,
+            anchor: Hit {
+                row: 1,
+                start: 0,
+                end: 5,
+            },
+            head: Hit {
+                row: 5,
+                start: 0,
+                end: 7,
+            },
+            dragged: true,
+        };
+
+        assert_eq!(app.selection_text(selection), "alpha\ncharlie");
+    }
+
+    #[test]
+    fn collapsed_body_no_longer_contributes_to_max_scroll() {
+        let mut app = App::new(vec![
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "one", Kind::Ctx),
+                right: cell(1, "one", Kind::Ctx),
+            },
+            Row::Line {
+                left: cell(2, "two", Kind::Ctx),
+                right: cell(2, "two", Kind::Ctx),
+            },
+        ]);
+        assert_eq!(app.max_scroll(41, 2), 2);
+
+        assert!(app.toggle_current_file());
+        assert_eq!(app.max_scroll(41, 2), 0);
+    }
+
     #[test]
     fn renders_split_view_with_gutters() {
         let app = App::new(crate::diff::parse(SMALL.as_bytes()));
@@ -665,7 +891,7 @@ diff --git a/f.rs b/f.rs
         assert_eq!(
             lines,
             vec![
-                format!("f.rs{}+1 -1", " ".repeat(30)),
+                format!("▾ f.rs{}+1 -1", " ".repeat(28)),
                 "@@ -1,2 +1,2 @@".to_string(),
                 "   1 ctx           │   1 ctx".to_string(),
                 "   2 old line      │   2 new line".to_string(),
@@ -1186,7 +1412,7 @@ diff --git a/f.rs b/f.rs
         let lines = render(40, 8, &app);
         // a running total would show +2 -2 on the second header
         assert!(
-            lines[5].starts_with("g.rs") && lines[5].ends_with("+1 -1"),
+            lines[5].starts_with("▾ g.rs") && lines[5].ends_with("+1 -1"),
             "{:?}",
             lines[5]
         );
@@ -1199,16 +1425,16 @@ diff --git a/f.rs b/f.rs
         term.draw(|f| draw(f, &app)).unwrap();
         let buf = term.backend().buffer().clone();
         // "src/" dim, not bold
-        assert_eq!(buf[(0u16, 0u16)].style().fg, Some(Color::DarkGray));
+        assert_eq!(buf[(2u16, 0u16)].style().fg, Some(Color::DarkGray));
         assert!(
-            !buf[(0u16, 0u16)]
+            !buf[(2u16, 0u16)]
                 .style()
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
         // "ui.rs" bold
         assert!(
-            buf[(4u16, 0u16)]
+            buf[(6u16, 0u16)]
                 .style()
                 .add_modifier
                 .contains(Modifier::BOLD)

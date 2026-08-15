@@ -26,6 +26,12 @@ struct Hit {
     end: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScreenRow {
+    source: usize,
+    segment: usize,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Selection {
     pane: Pane,
@@ -150,7 +156,9 @@ impl App {
         let mut next = self.visible_rows().next_back().unwrap_or(0);
         for row in self.visible_rows().rev() {
             height += row_height(&self.rows[row], left_w, right_w, self.gutter_w);
-            if height > body_h {
+            let capacity =
+                body_h.saturating_sub(usize::from(self.sticky_header_for(row).is_some()));
+            if height > capacity {
                 return next;
             }
             next = row;
@@ -221,6 +229,43 @@ impl App {
         (start..self.rows.len()).filter(|&row| self.row_visible(row))
     }
 
+    fn sticky_header(&self) -> Option<usize> {
+        self.sticky_header_for(self.scroll)
+    }
+
+    fn sticky_header_for(&self, row: usize) -> Option<usize> {
+        let index = self.section_index_for_row(row)?;
+        let section = &self.sections[index];
+        (!section.collapsed && row > section.header).then_some(section.header)
+    }
+
+    fn screen_row(&self, y: usize, width: usize, height: usize) -> Option<ScreenRow> {
+        let body_h = height.saturating_sub(1);
+        if y >= body_h {
+            return None;
+        }
+        let sticky = self.sticky_header();
+        if let Some(source) = sticky
+            && y == 0
+        {
+            return Some(ScreenRow { source, segment: 0 });
+        }
+        let sticky_offset = usize::from(sticky.is_some());
+        let mut remaining = y.saturating_sub(sticky_offset);
+        let (left_w, right_w) = self.pane_widths(width);
+        for source in self.visible_rows_from(self.scroll) {
+            let height = row_height(&self.rows[source], left_w, right_w, self.gutter_w);
+            if remaining < height {
+                return Some(ScreenRow {
+                    source,
+                    segment: remaining,
+                });
+            }
+            remaining -= height;
+        }
+        None
+    }
+
     fn pane_widths(&self, width: usize) -> (usize, usize) {
         let available = width.saturating_sub(1);
         let min = (self.gutter_w + 1).min(available / 2);
@@ -266,6 +311,22 @@ impl App {
             };
             self.scroll = previous;
         }
+    }
+
+    pub fn toggle_file_at(&mut self, y: usize, width: usize, height: usize) -> bool {
+        let Some(screen) = self.screen_row(y, width, height) else {
+            return false;
+        };
+        let Some(index) = self.section_index_for_row(screen.source) else {
+            return false;
+        };
+        if self.sections[index].header != screen.source {
+            return false;
+        }
+        self.cancel_interaction();
+        self.sections[index].collapsed = !self.sections[index].collapsed;
+        self.scroll = self.sections[index].header;
+        true
     }
 }
 
@@ -357,23 +418,37 @@ pub fn draw(f: &mut Frame, app: &App) {
     let w = area.width as usize;
     let (left_w, right_w) = app.pane_widths(w);
 
-    let lines: Vec<Line> = app
-        .visible_rows_from(app.scroll)
-        .flat_map(|i| {
-            let row = &app.rows[i];
-            render_rows(
-                row,
-                left_w,
-                right_w,
-                app.gutter_w,
-                app.stats.get(&i).copied(),
-                app.selection,
-                i,
-                app.header_collapsed(i),
-            )
-        })
-        .take(body_h as usize)
-        .collect();
+    let sticky = app.sticky_header();
+    let mut lines = Vec::new();
+    if let Some(header) = sticky.filter(|_| body_h > 0) {
+        lines.extend(render_rows(
+            &app.rows[header],
+            left_w,
+            right_w,
+            app.gutter_w,
+            app.stats.get(&header).copied(),
+            app.selection,
+            header,
+            false,
+        ));
+    }
+    let remaining = body_h as usize - lines.len();
+    lines.extend(
+        app.visible_rows_from(app.scroll)
+            .flat_map(|source| {
+                render_rows(
+                    &app.rows[source],
+                    left_w,
+                    right_w,
+                    app.gutter_w,
+                    app.stats.get(&source).copied(),
+                    app.selection,
+                    source,
+                    app.header_collapsed(source),
+                )
+            })
+            .take(remaining),
+    );
 
     let body = Rect {
         x: area.x,
@@ -607,9 +682,6 @@ fn cell_segments(
 
 impl App {
     fn hit_test(&self, pane: Pane, x: usize, y: usize, width: usize, height: usize) -> Option<Hit> {
-        if y >= height.saturating_sub(1) {
-            return None;
-        }
         let (left_w, right_w) = self.pane_widths(width);
         let (pane_w, local_x) = match pane {
             Pane::Left if left_w > 0 => (left_w, x.min(left_w - 1)),
@@ -617,17 +689,9 @@ impl App {
             _ => return None,
         };
 
-        let mut row_y = y;
-        let mut selected = None;
-        for row_index in self.scroll..self.rows.len() {
-            let row_h = row_height(&self.rows[row_index], left_w, right_w, self.gutter_w);
-            if row_y < row_h {
-                selected = Some((row_index, row_y));
-                break;
-            }
-            row_y -= row_h;
-        }
-        let (row_index, row_y) = selected?;
+        let screen = self.screen_row(y, width, height)?;
+        let row_index = screen.source;
+        let row_y = screen.segment;
         let cell = match &self.rows[row_index] {
             Row::Line { left, right } => match pane {
                 Pane::Left => left.as_ref(),
@@ -882,6 +946,102 @@ diff --git a/f.rs b/f.rs
 
         assert!(app.toggle_current_file());
         assert_eq!(app.max_scroll(41, 2), 0);
+    }
+
+    #[test]
+    fn sticky_header_appears_without_obscuring_the_top_content_row() {
+        let mut app = App::new(vec![
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "one", Kind::Ctx),
+                right: cell(1, "one", Kind::Ctx),
+            },
+            Row::Line {
+                left: cell(2, "two", Kind::Ctx),
+                right: cell(2, "two", Kind::Ctx),
+            },
+        ]);
+        app.scroll = 1;
+
+        let lines = render(41, 4, &app);
+        assert!(lines[0].starts_with("▾ a.rs"), "{lines:?}");
+        assert!(lines[1].contains("one"), "{lines:?}");
+        assert!(lines[2].contains("two"), "{lines:?}");
+    }
+
+    #[test]
+    fn real_header_is_not_duplicated_and_next_file_replaces_sticky_header() {
+        let mut app = App::new(vec![
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "a", Kind::Ctx),
+                right: cell(1, "a", Kind::Ctx),
+            },
+            Row::File("b.rs".into()),
+            Row::Line {
+                left: cell(1, "b", Kind::Ctx),
+                right: cell(1, "b", Kind::Ctx),
+            },
+        ]);
+
+        assert_eq!(
+            render(41, 4, &app)
+                .iter()
+                .filter(|line| line.starts_with("▾ a.rs"))
+                .count(),
+            1
+        );
+        app.scroll = 3;
+        assert!(render(41, 3, &app)[0].starts_with("▾ b.rs"));
+    }
+
+    #[test]
+    fn clicking_sticky_header_collapses_its_file_and_anchors_real_header() {
+        let mut app = App::new(vec![
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "one", Kind::Ctx),
+                right: cell(1, "one", Kind::Ctx),
+            },
+        ]);
+        app.scroll = 1;
+
+        assert!(app.toggle_file_at(0, 41, 3));
+        assert_eq!(app.scroll, 0);
+        assert!(app.sections[0].collapsed);
+    }
+
+    #[test]
+    fn sticky_header_offset_maps_selection_to_the_content_below_it() {
+        let mut app = App::new(vec![
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "abc", Kind::Ctx),
+                right: None,
+            },
+        ]);
+        app.scroll = 1;
+
+        app.begin_selection(5, 1, 41, 3);
+        app.drag_selection(6, 1, 41, 3);
+        assert_eq!(app.finish_selection(), Some("ab".into()));
+    }
+
+    #[test]
+    fn sticky_header_capacity_keeps_wrapped_tail_reachable() {
+        let app = App::new(vec![
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "abcdefghij", Kind::Ctx),
+                right: cell(1, "abcdefghij", Kind::Ctx),
+            },
+            Row::Line {
+                left: cell(2, "tail", Kind::Ctx),
+                right: cell(2, "tail", Kind::Ctx),
+            },
+        ]);
+
+        assert_eq!(app.max_scroll(21, 4), 2);
     }
 
     #[test]

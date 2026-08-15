@@ -174,7 +174,6 @@ impl App {
     }
 }
 
-#[allow(dead_code)]
 impl App {
     pub fn begin_resize(&mut self, x: usize, y: usize, width: usize, height: usize) -> bool {
         let hit = width > 1 && y < height.saturating_sub(1) && x == self.pane_widths(width).0;
@@ -215,7 +214,7 @@ impl App {
     }
 }
 
-const FOOTER: &str = " j/k · ctrl-d/u · n/p · g/G · q";
+const FOOTER: &str = " j/k · ctrl-d/u · n/p · g/G · = equal · q";
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
@@ -610,10 +609,6 @@ impl App {
         }
     }
 
-    pub fn cancel_selection(&mut self) {
-        self.selection = None;
-    }
-
     pub fn finish_selection(&mut self) -> Option<String> {
         let selection = self.selection.take()?;
         if !selection.dragged {
@@ -677,7 +672,7 @@ diff --git a/f.rs b/f.rs
                 "".to_string(),
                 "".to_string(),
                 "".to_string(),
-                " j/k · ctrl-d/u · n/p · g/G · q".to_string(),
+                " j/k · ctrl-d/u · n/p · g/G · = equal ·".to_string(),
             ]
         );
     }
@@ -1028,7 +1023,7 @@ diff --git a/f.rs b/f.rs
             vec![
                 "   3 a very long li│".to_string(),
                 "     ne that cannot│".to_string(),
-                " j/k · ctrl-d/u · n/p · g/G · q".to_string(),
+                " j/k · ctrl-d/u · n/p · g/G · = equal ·".to_string(),
             ]
         );
     }

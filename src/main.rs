@@ -123,15 +123,21 @@ fn handle_mouse_event(
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) if !m.modifiers.contains(KeyModifiers::SHIFT) => {
             app.clear_status();
-            app.begin_selection(m.column as usize, m.row as usize, width, height);
+            if !app.begin_resize(m.column as usize, m.row as usize, width, height) {
+                app.begin_selection(m.column as usize, m.row as usize, width, height);
+            }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            app.drag_selection(m.column as usize, m.row as usize, width, height);
+            if !app.drag_resize(m.column as usize, width) {
+                app.drag_selection(m.column as usize, m.row as usize, width, height);
+            }
         }
         MouseEventKind::Up(MouseButton::Left) => {
-            return app.finish_selection();
+            if !app.finish_resize() {
+                return app.finish_selection();
+            }
         }
-        MouseEventKind::Down(MouseButton::Left) => app.cancel_selection(),
+        MouseEventKind::Down(MouseButton::Left) => app.cancel_interaction(),
         _ => {}
     }
     None
@@ -160,12 +166,12 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                 }
                 match m.kind {
                     MouseEventKind::ScrollDown => {
-                        app.cancel_selection();
+                        app.cancel_interaction();
                         app.clear_status();
                         app.scroll = app.scroll.saturating_add(3);
                     }
                     MouseEventKind::ScrollUp => {
-                        app.cancel_selection();
+                        app.cancel_interaction();
                         app.clear_status();
                         app.scroll = app.scroll.saturating_sub(3);
                     }
@@ -176,7 +182,7 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                 if !key_event_is_actionable(k.kind) {
                     continue;
                 }
-                app.cancel_selection();
+                app.cancel_interaction();
                 app.clear_status();
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                 match k.code {
@@ -190,6 +196,7 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                     KeyCode::PageUp => app.scroll = app.scroll.saturating_sub(half),
                     KeyCode::Char('g') => app.scroll = 0,
                     KeyCode::Char('G') => app.scroll = max,
+                    KeyCode::Char('=') => app.reset_panes(),
                     KeyCode::Char('n') => {
                         if let Some(i) = app.file_jump(true) {
                             app.scroll = i;
@@ -203,7 +210,7 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                     _ => {}
                 }
             }
-            Event::Resize(_, _) => app.cancel_selection(),
+            Event::Resize(_, _) => app.cancel_interaction(),
             _ => {}
         }
     }
@@ -295,5 +302,60 @@ mod tests {
             ),
             Some("ab".into())
         );
+    }
+
+    #[test]
+    fn divider_drag_is_consumed_without_copying() {
+        let mut app = ui::App::new(vec![diff::Row::Line {
+            left: Some(diff::Cell {
+                no: 1,
+                text: "left".into(),
+                kind: diff::Kind::Ctx,
+                emph: vec![],
+            }),
+            right: Some(diff::Cell {
+                no: 1,
+                text: "right".into(),
+                kind: diff::Kind::Ctx,
+                emph: vec![],
+            }),
+        }]);
+        let event = |kind, column| MouseEvent {
+            kind,
+            column,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle_mouse_event(
+            &mut app,
+            event(MouseEventKind::Down(MouseButton::Left), 20),
+            41,
+            2,
+        );
+        assert!(app.finish_resize());
+
+        handle_mouse_event(
+            &mut app,
+            event(MouseEventKind::Down(MouseButton::Left), 20),
+            41,
+            2,
+        );
+        handle_mouse_event(
+            &mut app,
+            event(MouseEventKind::Drag(MouseButton::Left), 30),
+            41,
+            2,
+        );
+        assert_eq!(
+            handle_mouse_event(
+                &mut app,
+                event(MouseEventKind::Up(MouseButton::Left), 30),
+                41,
+                2,
+            ),
+            None
+        );
+        assert!(!app.finish_resize());
     }
 }

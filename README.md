@@ -20,7 +20,7 @@ input exits silently.
 
 ## Keys
 
-Mouse drag copies within one pane · `j/k` scroll · `ctrl-d/u` half-page · `n/p` next/prev file · `g/G` top/bottom · `q` quit
+Mouse drag copies within one pane · drag the divider to resize panes · `=` equal panes · `j/k` scroll · `ctrl-d/u` half-page · `n/p` next/prev file · `g/G` top/bottom · `q` quit
 
 Inside tmux, clipboard copying requires tmux 3.2 or newer. Scopic uses tmux's
 paste buffer and host-clipboard forwarding; no `set-clipboard on` setting is

@@ -214,7 +214,7 @@ impl App {
     }
 }
 
-const FOOTER: &str = " j/k · ctrl-d/u · n/p · g/G · = equal · q";
+const FOOTER: &str = " j/k · ctrl-d/u · n/p · g/G · = center · q";
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
@@ -672,7 +672,7 @@ diff --git a/f.rs b/f.rs
                 "".to_string(),
                 "".to_string(),
                 "".to_string(),
-                " j/k · ctrl-d/u · n/p · g/G · = equal ·".to_string(),
+                " j/k · ctrl-d/u · n/p · g/G · = center ·".to_string(),
             ]
         );
     }
@@ -1023,7 +1023,7 @@ diff --git a/f.rs b/f.rs
             vec![
                 "   3 a very long li│".to_string(),
                 "     ne that cannot│".to_string(),
-                " j/k · ctrl-d/u · n/p · g/G · = equal ·".to_string(),
+                " j/k · ctrl-d/u · n/p · g/G · = center ·".to_string(),
             ]
         );
     }

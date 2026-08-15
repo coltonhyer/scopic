@@ -69,6 +69,8 @@ pub struct App {
     gutter_w: usize,
     /// File header row index → (added, deleted) line counts for its section
     stats: HashMap<usize, (u32, u32)>,
+    pane_ratio: Option<(usize, usize)>,
+    resizing_divider: bool,
     selection: Option<Selection>,
     status: Option<(String, Style)>,
 }
@@ -110,6 +112,8 @@ impl App {
             scroll: 0,
             gutter_w: digits + 1,
             stats,
+            pane_ratio: None,
+            resizing_divider: false,
             selection: None,
             status: None,
         }
@@ -119,7 +123,7 @@ impl App {
     /// page may run short); needs the width to sum wrapped row heights
     pub fn max_scroll(&self, w: usize, viewport_h: usize) -> usize {
         let body_h = viewport_h.saturating_sub(1);
-        let (lw, rw) = panes(w);
+        let (lw, rw) = self.pane_widths(w);
         let mut h = 0usize;
         for i in (0..self.rows.len()).rev() {
             h += row_height(&self.rows[i], lw, rw, self.gutter_w);
@@ -157,6 +161,58 @@ impl App {
     pub fn clear_status(&mut self) {
         self.status = None;
     }
+
+    fn pane_widths(&self, width: usize) -> (usize, usize) {
+        let available = width.saturating_sub(1);
+        let min = (self.gutter_w + 1).min(available / 2);
+        let preferred = self
+            .pane_ratio
+            .and_then(|(left, total)| (total > 0).then(|| available.saturating_mul(left) / total))
+            .unwrap_or(available / 2);
+        let left = preferred.clamp(min, available.saturating_sub(min));
+        (left, available - left)
+    }
+}
+
+#[allow(dead_code)]
+impl App {
+    pub fn begin_resize(&mut self, x: usize, y: usize, width: usize, height: usize) -> bool {
+        let hit = width > 1 && y < height.saturating_sub(1) && x == self.pane_widths(width).0;
+        self.resizing_divider = hit;
+        if hit {
+            self.selection = None;
+        }
+        hit
+    }
+
+    pub fn drag_resize(&mut self, x: usize, width: usize) -> bool {
+        if !self.resizing_divider {
+            return false;
+        }
+        let available = width.saturating_sub(1);
+        if available > 0 {
+            let min = (self.gutter_w + 1).min(available / 2);
+            let left = x.min(available).clamp(min, available.saturating_sub(min));
+            self.pane_ratio = Some((left, available));
+        }
+        true
+    }
+
+    pub fn finish_resize(&mut self) -> bool {
+        let was_resizing = self.resizing_divider;
+        self.resizing_divider = false;
+        was_resizing
+    }
+
+    pub fn reset_panes(&mut self) {
+        self.pane_ratio = None;
+        self.resizing_divider = false;
+    }
+
+    pub fn cancel_interaction(&mut self) {
+        self.selection = None;
+        self.resizing_divider = false;
+    }
 }
 
 const FOOTER: &str = " j/k · ctrl-d/u · n/p · g/G · q";
@@ -188,12 +244,6 @@ fn emph_style(kind: Kind) -> Style {
     }
 }
 
-/// left/right pane widths for a terminal width
-fn panes(w: usize) -> (usize, usize) {
-    let left = w.saturating_sub(1) / 2;
-    (left, w.saturating_sub(1 + left))
-}
-
 // ponytail: counts by building the spans; fine at diff sizes
 fn row_height(row: &Row, left_w: usize, right_w: usize, gutter_w: usize) -> usize {
     match row {
@@ -211,7 +261,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     let body_h = area.height.saturating_sub(1);
     let w = area.width as usize;
-    let (left_w, right_w) = panes(w);
+    let (left_w, right_w) = app.pane_widths(w);
 
     let lines: Vec<Line> = app
         .rows
@@ -462,7 +512,7 @@ impl App {
         if y >= height.saturating_sub(1) {
             return None;
         }
-        let (left_w, right_w) = panes(width);
+        let (left_w, right_w) = self.pane_widths(width);
         let (pane_w, local_x) = match pane {
             Pane::Left if left_w > 0 => (left_w, x.min(left_w - 1)),
             Pane::Right if right_w > 0 => (right_w, x.saturating_sub(left_w + 1).min(right_w - 1)),
@@ -529,7 +579,8 @@ impl App {
     }
 
     pub fn begin_selection(&mut self, x: usize, y: usize, width: usize, height: usize) {
-        let (left_w, _) = panes(width);
+        self.resizing_divider = false;
+        let (left_w, _) = self.pane_widths(width);
         let pane = if x < left_w {
             Pane::Left
         } else if x > left_w {
@@ -733,6 +784,65 @@ diff --git a/f.rs b/f.rs
                 end: 4,
             })
         );
+    }
+
+    #[test]
+    fn divider_resize_preserves_ratio_across_terminal_widths() {
+        let mut app = App::new(vec![Row::Line {
+            left: cell(1, "left", Kind::Ctx),
+            right: cell(1, "right", Kind::Ctx),
+        }]);
+
+        assert!(app.begin_resize(20, 0, 41, 2));
+        assert!(app.drag_resize(30, 41));
+        assert!(app.finish_resize());
+        assert_eq!(app.pane_widths(41), (30, 10));
+        assert_eq!(app.pane_widths(81), (60, 20));
+    }
+
+    #[test]
+    fn divider_resize_clamps_both_panes_to_readable_width() {
+        let mut app = App::new(vec![Row::Line {
+            left: cell(1, "left", Kind::Ctx),
+            right: cell(1, "right", Kind::Ctx),
+        }]);
+
+        assert!(app.begin_resize(20, 0, 41, 2));
+        assert!(app.drag_resize(0, 41));
+        assert!(app.finish_resize());
+        assert_eq!(app.pane_widths(41), (6, 34));
+
+        assert!(app.begin_resize(6, 0, 41, 2));
+        assert!(app.drag_resize(40, 41));
+        assert!(app.finish_resize());
+        assert_eq!(app.pane_widths(41), (34, 6));
+    }
+
+    #[test]
+    fn pane_reset_restores_equal_split() {
+        let mut app = App::new(vec![Row::Line {
+            left: cell(1, "left", Kind::Ctx),
+            right: cell(1, "right", Kind::Ctx),
+        }]);
+
+        assert!(app.begin_resize(20, 0, 41, 2));
+        assert!(app.drag_resize(30, 41));
+        assert!(app.finish_resize());
+        app.reset_panes();
+        assert_eq!(app.pane_widths(41), (20, 20));
+    }
+
+    #[test]
+    fn uneven_split_moves_the_rendered_divider() {
+        let mut app = App::new(vec![Row::Line {
+            left: cell(1, "left", Kind::Ctx),
+            right: cell(1, "right", Kind::Ctx),
+        }]);
+
+        assert!(app.begin_resize(20, 0, 41, 2));
+        assert!(app.drag_resize(30, 41));
+        assert!(app.finish_resize());
+        assert_eq!(render(41, 2, &app)[0].chars().nth(30), Some('│'));
     }
 
     #[test]

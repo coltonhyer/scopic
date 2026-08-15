@@ -152,7 +152,7 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
         let half = h / 2;
         // file jumps and shrinking resizes can leave scroll past the bound
         let max = app.max_scroll(w, h);
-        app.scroll = app.scroll.min(max);
+        app.normalize_scroll(max);
         term.draw(|f| ui::draw(f, app))?;
         match event::read()? {
             Event::Mouse(m) => {
@@ -408,5 +408,41 @@ mod tests {
 
         assert_eq!(handle_mouse_event(&mut app, event, 41, 2), None);
         assert_eq!(app.max_scroll(41, 2), 1);
+    }
+
+    #[test]
+    fn file_header_anchor_survives_next_loop_normalization() {
+        let mut app = ui::App::new(vec![
+            diff::Row::File("a.rs".into()),
+            diff::Row::Line {
+                left: Some(diff::Cell {
+                    no: 1,
+                    text: "alpha".into(),
+                    kind: diff::Kind::Ctx,
+                    emph: vec![],
+                }),
+                right: None,
+            },
+            diff::Row::File("b.rs".into()),
+            diff::Row::Line {
+                left: Some(diff::Cell {
+                    no: 1,
+                    text: "beta".into(),
+                    kind: diff::Kind::Ctx,
+                    emph: vec![],
+                }),
+                right: None,
+            },
+        ]);
+        app.scroll = 2;
+
+        assert!(app.toggle_current_file());
+        let max = app.max_scroll(41, 4);
+        assert_eq!(max, 0);
+        app.normalize_scroll(max);
+        assert_eq!(app.scroll, 2);
+
+        assert!(app.toggle_current_file());
+        assert_eq!(app.max_scroll(41, 4), 2);
     }
 }

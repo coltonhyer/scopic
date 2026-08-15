@@ -312,6 +312,17 @@ impl App {
         }
     }
 
+    pub fn normalize_scroll(&mut self, max: usize) {
+        if self.scroll > max
+            && !self
+                .sections
+                .iter()
+                .any(|section| section.header == self.scroll)
+        {
+            self.scroll = max;
+        }
+    }
+
     pub fn toggle_file_at(&mut self, y: usize, width: usize, height: usize) -> bool {
         let Some(screen) = self.screen_row(y, width, height) else {
             return false;

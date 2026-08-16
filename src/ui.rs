@@ -85,7 +85,7 @@ pub struct App {
     sections: Vec<FileSection>,
     pane_ratio: Option<(usize, usize)>,
     resizing_divider: bool,
-    preserve_scroll: bool,
+    preserve_scroll: Option<usize>,
     selection: Option<Selection>,
     status: Option<(String, Style)>,
 }
@@ -143,7 +143,7 @@ impl App {
             sections,
             pane_ratio: None,
             resizing_divider: false,
-            preserve_scroll: false,
+            preserve_scroll: None,
             selection: None,
             status: None,
         }
@@ -286,12 +286,14 @@ impl App {
             return false;
         };
         self.cancel_interaction();
+        self.preserve_scroll = None;
         self.sections[index].collapsed = !self.sections[index].collapsed;
         self.scroll = self.sections[index].header;
         true
     }
 
     pub fn scroll_down(&mut self, count: usize, max: usize) {
+        self.preserve_scroll = None;
         for _ in 0..count {
             let Some(next) = (self.scroll + 1..self.rows.len()).find(|&row| self.row_visible(row))
             else {
@@ -306,6 +308,7 @@ impl App {
     }
 
     pub fn scroll_up(&mut self, count: usize) {
+        self.preserve_scroll = None;
         for _ in 0..count {
             let Some(previous) = (0..self.scroll).rev().find(|&row| self.row_visible(row)) else {
                 break;
@@ -315,8 +318,10 @@ impl App {
     }
 
     pub fn normalize_scroll(&mut self, max: usize) {
-        if self.preserve_scroll {
-            self.preserve_scroll = false;
+        if self.preserve_scroll != Some(self.scroll) {
+            self.preserve_scroll = None;
+        }
+        if self.preserve_scroll.is_some() {
             return;
         }
         if self.scroll > max
@@ -343,8 +348,9 @@ impl App {
         self.sections[index].collapsed = !self.sections[index].collapsed;
         if y == 0 {
             self.scroll = self.sections[index].header;
+            self.preserve_scroll = None;
         } else {
-            self.preserve_scroll = true;
+            self.preserve_scroll = Some(self.scroll);
         }
         true
     }
@@ -355,6 +361,7 @@ impl App {
         let hit = width > 1 && y < height.saturating_sub(1) && x == self.pane_widths(width).0;
         self.resizing_divider = hit;
         if hit {
+            self.preserve_scroll = None;
             self.selection = None;
         }
         hit
@@ -382,6 +389,11 @@ impl App {
     pub fn reset_panes(&mut self) {
         self.pane_ratio = None;
         self.resizing_divider = false;
+        self.preserve_scroll = None;
+    }
+
+    pub fn clear_scroll_preservation(&mut self) {
+        self.preserve_scroll = None;
     }
 
     pub fn cancel_interaction(&mut self) {
@@ -1055,7 +1067,8 @@ diff --git a/f.rs b/f.rs
             },
         ]);
         let (width, height) = (41, 6);
-        app.scroll = 1;
+        app.scroll = 2;
+        let starting_scroll = app.scroll;
         let before = render(width, height, &app);
         let header_y = before
             .iter()
@@ -1065,6 +1078,10 @@ diff --git a/f.rs b/f.rs
         let above = before[..header_y].to_vec();
 
         assert!(app.toggle_file_at(header_y, width as usize, height as usize));
+        let max = app.max_scroll(width as usize, height as usize);
+        assert!(max < starting_scroll);
+        app.normalize_scroll(max);
+        app.cancel_interaction();
         app.normalize_scroll(app.max_scroll(width as usize, height as usize));
         let collapsed = render(width, height, &app);
         assert_eq!(
@@ -1075,12 +1092,19 @@ diff --git a/f.rs b/f.rs
 
         assert!(app.toggle_file_at(header_y, width as usize, height as usize));
         app.normalize_scroll(app.max_scroll(width as usize, height as usize));
+        app.cancel_interaction();
+        app.normalize_scroll(app.max_scroll(width as usize, height as usize));
         let expanded = render(width, height, &app);
         assert_eq!(
             expanded.iter().position(|line| line.starts_with("▾ b.rs")),
             Some(header_y)
         );
         assert_eq!(&expanded[..header_y], &above);
+
+        assert!(app.toggle_file_at(header_y, width as usize, height as usize));
+        let max = app.max_scroll(width as usize, height as usize);
+        app.scroll_down(1, max);
+        assert!(app.preserve_scroll.is_none());
     }
 
     #[test]

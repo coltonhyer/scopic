@@ -215,7 +215,10 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut ui::App) -> Result<()> {
                     _ => {}
                 }
             }
-            Event::Resize(_, _) => app.cancel_interaction(),
+            Event::Resize(_, _) => {
+                app.cancel_interaction();
+                app.clear_scroll_preservation();
+            }
             _ => {}
         }
     }

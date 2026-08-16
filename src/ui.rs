@@ -85,6 +85,7 @@ pub struct App {
     sections: Vec<FileSection>,
     pane_ratio: Option<(usize, usize)>,
     resizing_divider: bool,
+    preserve_scroll: bool,
     selection: Option<Selection>,
     status: Option<(String, Style)>,
 }
@@ -142,6 +143,7 @@ impl App {
             sections,
             pane_ratio: None,
             resizing_divider: false,
+            preserve_scroll: false,
             selection: None,
             status: None,
         }
@@ -313,6 +315,10 @@ impl App {
     }
 
     pub fn normalize_scroll(&mut self, max: usize) {
+        if self.preserve_scroll {
+            self.preserve_scroll = false;
+            return;
+        }
         if self.scroll > max
             && !self
                 .sections
@@ -335,7 +341,11 @@ impl App {
         }
         self.cancel_interaction();
         self.sections[index].collapsed = !self.sections[index].collapsed;
-        self.scroll = self.sections[index].header;
+        if y == 0 {
+            self.scroll = self.sections[index].header;
+        } else {
+            self.preserve_scroll = true;
+        }
         true
     }
 }
@@ -1019,6 +1029,58 @@ diff --git a/f.rs b/f.rs
         assert!(app.toggle_file_at(0, 41, 3));
         assert_eq!(app.scroll, 0);
         assert!(app.sections[0].collapsed);
+    }
+
+    #[test]
+    fn real_header_toggle_preserves_screen_position_across_normalization() {
+        let mut app = App::new(vec![
+            Row::Raw("preamble".into()),
+            Row::File("a.rs".into()),
+            Row::Line {
+                left: cell(1, "alpha", Kind::Ctx),
+                right: None,
+            },
+            Row::Line {
+                left: cell(2, "alpha two", Kind::Ctx),
+                right: None,
+            },
+            Row::File("b.rs".into()),
+            Row::Line {
+                left: cell(1, "beta", Kind::Ctx),
+                right: None,
+            },
+            Row::Line {
+                left: cell(2, "beta two", Kind::Ctx),
+                right: None,
+            },
+        ]);
+        let (width, height) = (41, 6);
+        app.scroll = 1;
+        let before = render(width, height, &app);
+        let header_y = before
+            .iter()
+            .position(|line| line.starts_with("▾ b.rs"))
+            .unwrap();
+        assert_eq!(header_y, 3);
+        let above = before[..header_y].to_vec();
+
+        assert!(app.toggle_file_at(header_y, width as usize, height as usize));
+        app.normalize_scroll(app.max_scroll(width as usize, height as usize));
+        let collapsed = render(width, height, &app);
+        assert_eq!(
+            collapsed.iter().position(|line| line.starts_with("▸ b.rs")),
+            Some(header_y)
+        );
+        assert_eq!(&collapsed[..header_y], &above);
+
+        assert!(app.toggle_file_at(header_y, width as usize, height as usize));
+        app.normalize_scroll(app.max_scroll(width as usize, height as usize));
+        let expanded = render(width, height, &app);
+        assert_eq!(
+            expanded.iter().position(|line| line.starts_with("▾ b.rs")),
+            Some(header_y)
+        );
+        assert_eq!(&expanded[..header_y], &above);
     }
 
     #[test]

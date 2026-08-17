@@ -2,7 +2,12 @@
 name = "scopic"
 version = "0.1.0"
 edition = "2024"
+description = "A side-by-side terminal viewer for Git and Jujutsu diffs"
+repository = "https://github.com/coltonhyer/scopic"
 license = "MIT OR Apache-2.0"
+keywords = ["diff", "git", "jujutsu", "terminal", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["/.agents", "/.github", "/.gitattributes", "/.gitignore", "/AGENTS.md", "/BACKLOG.md", "/CLAUDE.md"]
 
 [dependencies]
 ratatui = "0.30.2"

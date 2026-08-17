@@ -31,7 +31,7 @@ required.
 ## Install & hook up
 
 ```
-cargo install --path .
+cargo install --git https://github.com/coltonhyer/scopic
 ```
 
 **jj**, in `~/.config/jj/config.toml`, scoped so `jj log` etc. keep the

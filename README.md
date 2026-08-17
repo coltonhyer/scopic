@@ -1,5 +1,7 @@
 # scopic
 
+[![CI](https://github.com/coltonhyer/scopic/actions/workflows/ci.yml/badge.svg)](https://github.com/coltonhyer/scopic/actions/workflows/ci.yml)
+
 *-scopic*, from the Greek *skopein*, "to look at", is the suffix of viewing
 instruments: telescopic, microscopic, stereoscopic. This one is for diffs.
 

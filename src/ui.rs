@@ -300,7 +300,6 @@ impl App {
                 break;
             };
             if next > max {
-                self.scroll = max;
                 break;
             }
             self.scroll = next;
@@ -920,6 +919,24 @@ diff --git a/f.rs b/f.rs
         assert_eq!(app.scroll, 4);
         app.scroll_up(2);
         assert_eq!(app.scroll, 1);
+    }
+
+    #[test]
+    fn forward_scroll_stays_at_short_tail_header() {
+        let mut app = App::new(vec![
+            Row::File("a.rs".into()),
+            Row::Raw("alpha".into()),
+            Row::File("b.rs".into()),
+            Row::Raw("beta".into()),
+        ]);
+        app.scroll = app.file_jump(true).unwrap();
+        let anchored = app.scroll;
+        let max = app.max_scroll(41, 5);
+        assert!(max < anchored);
+
+        app.scroll_down(1, max);
+
+        assert_eq!(app.scroll, anchored);
     }
 
     #[test]

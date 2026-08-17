@@ -5,14 +5,7 @@ cost, not promised release order.
 
 ## Near-term hardening
 
-### 1. Keep forward scrolling monotonic after short-tail file jumps [S]
-
-After `n` jumps to a short final file whose header is intentionally anchored
-beyond the ordinary tail-fit bound, pressing `j` can clamp backward to that
-bound. Forward input must never move the viewport upward; preserve the header
-anchor or treat the short tail as the effective end.
-
-### 2. Persist reviewed files for a diff [M]
+### 1. Persist reviewed files for a diff [M]
 
 Add a GitHub-style "viewed" control to file headers. Marking a file viewed
 should collapse it and persist for the same diff identity, while ordinary
@@ -21,14 +14,14 @@ before implementation.
 
 ## Review workflow
 
-### 3. Attach comments to diff lines [L]
+### 2. Attach comments to diff lines [L]
 
 Allow review notes on individual left/right lines without turning scopic into
 an editor. The first useful version should support creating, editing, listing,
 and exporting comments in a format a coding agent can consume. Persistence and
 line identity must survive viewport changes and collapsed files.
 
-### 4. Expand diff hunks with repository context [L]
+### 3. Expand diff hunks with repository context [L]
 
 Offer GitHub-style expansion above or below a hunk by a small line count. Piped
 diff text does not contain the missing source, so this requires an optional
@@ -37,13 +30,13 @@ or unavailable files. Keep ordinary stdin/file diff viewing standalone.
 
 ## Optional polish
 
-### 5. Remember pane widths per file [M]
+### 4. Remember pane widths per file [M]
 
 Let a file keep its own divider ratio instead of applying one ratio to the
 whole diff. Revisit only if global resizing remains limiting now that files are
 independently collapsible.
 
-### 6. Improve divider discoverability [S]
+### 5. Improve divider discoverability [S]
 
 Consider a hover/drag highlight or another terminal-native affordance if users
 miss the draggable divider. Terminal applications cannot reliably request a

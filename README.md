@@ -33,7 +33,13 @@ required.
 ## Install & hook up
 
 ```
-cargo install --git https://github.com/coltonhyer/scopic
+cargo install scopic
+```
+
+Or install the tagged release from GitHub:
+
+```
+cargo install --git https://github.com/coltonhyer/scopic --tag v0.1.0
 ```
 
 **jj**, in `~/.config/jj/config.toml`, scoped so `jj log` etc. keep the

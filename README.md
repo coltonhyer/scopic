@@ -8,6 +8,8 @@ split view: per-file header bars with `+n -n` change counts, muted
 GitHub-dark colors, full-width hunk bands, intraline word highlights, dual
 line numbers.
 
+![Scopic displaying a multi-file side-by-side diff with collapsed file headers](assets/screenshot.png)
+
 ```
 jj diff --git | scopic
 git diff | scopic
